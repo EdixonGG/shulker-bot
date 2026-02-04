@@ -1,9 +1,8 @@
-
 import os
 import discord
 from discord.ext import commands, tasks
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 import time
 
 # ===============================
@@ -47,14 +46,35 @@ db.commit()
 cooldowns = {}
 
 # ===============================
+# CONTROL RANKING DIARIO
+# ===============================
+ultimo_ranking_publicado = None
+
+# ===============================
 # RESET DIARIO AUTOMÁTICO
 # ===============================
 @tasks.loop(minutes=1)
 async def reset_diario():
     hoy = str(date.today())
-
     cursor.execute("DELETE FROM shulker WHERE fecha != ?", (hoy,))
     db.commit()
+
+# ===============================
+# RANKING DIARIO AUTOMÁTICO 23:59
+# ===============================
+@tasks.loop(minutes=1)
+async def ranking_diario_automatico():
+    global ultimo_ranking_publicado
+
+    ahora = datetime.utcnow()
+    hoy = ahora.date()
+
+    if ahora.hour == 23 and ahora.minute == 59:
+        if ultimo_ranking_publicado == hoy:
+            return
+
+        await actualizar_ranking(bot)
+        ultimo_ranking_publicado = hoy
 
 # ===============================
 # FUNCIÓN RANKING
@@ -201,6 +221,9 @@ async def on_ready():
 
     if not reset_diario.is_running():
         reset_diario.start()
+
+    if not ranking_diario_automatico.is_running():
+        ranking_diario_automatico.start()
 
     channel = bot.get_channel(FORM_CHANNEL_ID)
     if not channel:

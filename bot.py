@@ -11,12 +11,13 @@ import time
 FORM_CHANNEL_ID = 1465764092978532547
 LOG_CHANNEL_ID = 1462316362515873947
 RANKING_CHANNEL_ID = 1462316362515873948
-TOKEN = os.getenv("DISCORD_TOKEN")
+REGLAS_CHANNEL_ID = 000000000000000000  # 👈 ID del canal de reglas
 
-COOLDOWN_SECONDS = 60  # antispam por usuario
+TOKEN = os.getenv("DISCORD_TOKEN")
+COOLDOWN_SECONDS = 60
 
 # ===============================
-# CONFIGURACIÓN DEL BOT
+# INTENTS
 # ===============================
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
@@ -40,18 +41,11 @@ CREATE TABLE IF NOT EXISTS shulker (
 """)
 db.commit()
 
-# ===============================
-# ANTISPAM
-# ===============================
 cooldowns = {}
-
-# ===============================
-# CONTROL RANKING DIARIO
-# ===============================
 ultimo_ranking_publicado = None
 
 # ===============================
-# RESET DIARIO AUTOMÁTICO
+# RESET DIARIO
 # ===============================
 @tasks.loop(minutes=1)
 async def reset_diario():
@@ -60,7 +54,7 @@ async def reset_diario():
     db.commit()
 
 # ===============================
-# RANKING DIARIO AUTOMÁTICO 23:59 UTC
+# RANKING AUTOMÁTICO
 # ===============================
 @tasks.loop(minutes=1)
 async def ranking_diario_automatico():
@@ -72,7 +66,6 @@ async def ranking_diario_automatico():
     if ahora.hour == 23 and ahora.minute == 59:
         if ultimo_ranking_publicado == hoy:
             return
-
         await actualizar_ranking(bot)
         ultimo_ranking_publicado = hoy
 
@@ -116,94 +109,88 @@ async def actualizar_ranking(bot):
     await channel.send(embed=embed)
 
 # ===============================
-# COMANDOS ADMIN
+# EMBED REGLAS
 # ===============================
-@bot.command(name="topdia")
-@commands.has_permissions(administrator=True)
-async def top_dia(ctx):
-    hoy = str(date.today())
-
-    cursor.execute("""
-        SELECT username, total
-        FROM shulker
-        WHERE fecha = ?
-        ORDER BY total DESC
-    """, (hoy,))
-    datos = cursor.fetchall()
-
-    if not datos:
-        await ctx.send("❌ No hay registros hoy.")
-        return
-
-    descripcion = ""
-    for i, (user, total) in enumerate(datos, start=1):
-        descripcion += f"**{i}. {user}** — {total} shulker\n"
-
+async def enviar_reglas(channel):
     embed = discord.Embed(
-        title="🏆 Ranking Diario",
-        description=descripcion,
+        title="📜 REGLAS OFICIALES DEL TEAM",
+        description="Normas para mantener un ambiente ordenado, justo y sano.",
         color=discord.Color.gold()
     )
-    embed.set_footer(text=f"Fecha: {hoy}")
 
-    await ctx.send(embed=embed)
-
-@bot.command(name="topsemana")
-@commands.has_permissions(administrator=True)
-async def top_semana(ctx):
-    cursor.execute("""
-        SELECT username, SUM(total) as total_semana
-        FROM shulker
-        GROUP BY user_id
-        ORDER BY total_semana DESC
-    """)
-    datos = cursor.fetchall()
-
-    if not datos:
-        await ctx.send("❌ No hay registros esta semana.")
-        return
-
-    descripcion = ""
-    for i, (user, total) in enumerate(datos, start=1):
-        descripcion += f"**{i}. {user}** — {total} shulker\n"
-
-    embed = discord.Embed(
-        title="📅 Ranking Semanal",
-        description=descripcion,
-        color=discord.Color.blue()
+    embed.add_field(
+        name="🤝 Respeto",
+        value="• Respeto total\n• ❌ Insultos, burlas o discriminación",
+        inline=False
     )
 
-    await ctx.send(embed=embed)
+    embed.add_field(
+        name="🧠 Comunicación",
+        value="• Usa cada canal correctamente\n• ❌ Spam o flood",
+        inline=False
+    )
 
-@top_dia.error
-@top_semana.error
-async def permiso_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("⛔ No tienes permisos para usar este comando.")
+    embed.add_field(
+        name="📌 Canales importantes",
+        value="• No son para conversar\n• Solo info oficial",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🧰 Aportes",
+        value="• Registros honestos\n• ❌ Mentir o inflar datos",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛡️ Staff",
+        value="• Las decisiones se respetan\n• Reclamos en privado",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🚫 Prohibido",
+        value="• Traición\n• Robo\n• Filtrar información",
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚖️ Sanciones",
+        value="Advertencia → Restricción → Expulsión",
+        inline=False
+    )
+
+    embed.set_footer(text="Aceptar reglas es obligatorio al permanecer en el servidor")
+
+    await channel.send(embed=embed)
+
+# ===============================
+# COMANDO ADMIN PUBLICAR REGLAS
+# ===============================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def publicar_reglas(ctx):
+    channel = bot.get_channel(REGLAS_CHANNEL_ID)
+    if not channel:
+        await ctx.send("❌ Canal de reglas no encontrado.")
+        return
+
+    await enviar_reglas(channel)
+    await ctx.send("✅ Reglas publicadas correctamente.", delete_after=5)
 
 # ===============================
 # MODAL
 # ===============================
 class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
-    cantidad = discord.ui.TextInput(
-        label="¿Cuántas shulker colocaste?",
-        placeholder="Ejemplo: 3",
-        required=True,
-        max_length=4
-    )
+    cantidad = discord.ui.TextInput(label="¿Cuántas shulker colocaste?", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         ahora = time.time()
 
-        if user_id in cooldowns:
-            restante = COOLDOWN_SECONDS - (ahora - cooldowns[user_id])
-            if restante > 0:
-                await interaction.response.send_message(
-                    f"⏳ Espera {int(restante)} segundos.",
-                    ephemeral=True
-                )
-                return
+        if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
+            await interaction.response.send_message("⏳ Espera antes de volver a registrar.", ephemeral=True)
+            return
 
         cooldowns[user_id] = ahora
 
@@ -212,51 +199,28 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             if cantidad_int <= 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message(
-                "❌ Número inválido.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
             return
 
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        cursor.execute("""
-            SELECT total FROM shulker
-            WHERE user_id = ? AND fecha = ?
-        """, (user_id, hoy))
+        cursor.execute(
+            "SELECT total FROM shulker WHERE user_id = ? AND fecha = ?",
+            (user_id, hoy)
+        )
         row = cursor.fetchone()
 
-        if row:
-            nuevo_total = row[0] + cantidad_int
-            cursor.execute("""
-                UPDATE shulker SET total = ?
-                WHERE user_id = ? AND fecha = ?
-            """, (nuevo_total, user_id, hoy))
-        else:
-            nuevo_total = cantidad_int
-            cursor.execute("""
-                INSERT INTO shulker (user_id, username, fecha, total)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, username, hoy, nuevo_total))
+        nuevo_total = cantidad_int if not row else row[0] + cantidad_int
 
+        cursor.execute(
+            "REPLACE INTO shulker (user_id, username, fecha, total) VALUES (?, ?, ?, ?)",
+            (user_id, username, hoy, nuevo_total)
+        )
         db.commit()
 
-        embed = discord.Embed(title="🧰 Registro guardado", color=discord.Color.green())
-        embed.add_field(name="Usuario", value=interaction.user.mention)
-        embed.add_field(name="Agregado", value=str(cantidad_int))
-        embed.add_field(name="Total hoy", value=str(nuevo_total))
-
-        log_channel = interaction.client.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
-            await log_channel.send(embed=embed)
-
         await actualizar_ranking(interaction.client)
-
-        await interaction.response.send_message(
-            "✅ Registro exitoso.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
 
 # ===============================
 # BOTÓN
@@ -265,12 +229,7 @@ class ShulkerButton(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Registrar Shulker",
-        style=discord.ButtonStyle.green,
-        emoji="📦",
-        custom_id="registrar_shulker"
-    )
+    @discord.ui.button(label="Registrar Shulker", style=discord.ButtonStyle.green, emoji="📦")
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ShulkerModal())
 
@@ -288,23 +247,17 @@ async def on_ready():
         ranking_diario_automatico.start()
 
     channel = bot.get_channel(FORM_CHANNEL_ID)
-    if not channel:
-        return
-
-    async for message in channel.history(limit=50):
-        if message.author == bot.user:
-            await message.delete()
-
-    await channel.send(
-        embed=discord.Embed(
-            title="🧰 Registro de Shulker",
-            description="Presiona el botón para registrar tu aporte.",
-            color=discord.Color.green()
-        ),
-        view=ShulkerButton()
-    )
+    if channel:
+        await channel.send(
+            embed=discord.Embed(
+                title="🧰 Registro de Shulker",
+                description="Presiona el botón para registrar.",
+                color=discord.Color.green()
+            ),
+            view=ShulkerButton()
+        )
 
 # ===============================
-# EJECUTAR BOT
+# RUN
 # ===============================
 bot.run(TOKEN)

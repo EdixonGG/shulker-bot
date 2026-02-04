@@ -11,7 +11,7 @@ import time
 FORM_CHANNEL_ID = 1465764092978532547
 LOG_CHANNEL_ID = 1462316362515873947
 RANKING_CHANNEL_ID = 1462316362515873948
-REGLAS_CHANNEL_ID = 000000000000000000  # 👈 ID del canal de reglas
+REGLAS_CHANNEL_ID = 1462316362004434978  # 👈 ID del canal de reglas
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
@@ -261,3 +261,4 @@ async def on_ready():
 # RUN
 # ===============================
 bot.run(TOKEN)
+

@@ -45,7 +45,7 @@ db.commit()
 cooldowns = {}
 
 # ===============================
-# UTILIDAD EMBEDS RANKING
+# EMBED RANKING
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer):
     if not datos:
@@ -65,7 +65,7 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer):
     return embed
 
 # ===============================
-# ACTUALIZAR TODOS LOS TOPS
+# ACTUALIZAR RANKINGS (ORDEN FIJO)
 # ===============================
 async def actualizar_todos_los_ranking():
     channel = bot.get_channel(RANKING_CHANNEL_ID)
@@ -76,27 +76,7 @@ async def actualizar_todos_los_ranking():
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     inicio_mes = hoy.replace(day=1)
 
-    # ===== DIARIO =====
-    cursor.execute("""
-        SELECT username, SUM(total)
-        FROM shulker
-        WHERE fecha = ?
-        GROUP BY user_id
-        ORDER BY SUM(total) DESC
-    """, (str(hoy),))
-    diario = cursor.fetchall()
-
-    # ===== SEMANAL =====
-    cursor.execute("""
-        SELECT username, SUM(total)
-        FROM shulker
-        WHERE fecha >= ?
-        GROUP BY user_id
-        ORDER BY SUM(total) DESC
-    """, (str(inicio_semana),))
-    semanal = cursor.fetchall()
-
-    # ===== MENSUAL =====
+    # ===== CONSULTAS =====
     cursor.execute("""
         SELECT username, SUM(total)
         FROM shulker
@@ -106,13 +86,32 @@ async def actualizar_todos_los_ranking():
     """, (str(inicio_mes),))
     mensual = cursor.fetchall()
 
+    cursor.execute("""
+        SELECT username, SUM(total)
+        FROM shulker
+        WHERE fecha >= ?
+        GROUP BY user_id
+        ORDER BY SUM(total) DESC
+    """, (str(inicio_semana),))
+    semanal = cursor.fetchall()
+
+    cursor.execute("""
+        SELECT username, SUM(total)
+        FROM shulker
+        WHERE fecha = ?
+        GROUP BY user_id
+        ORDER BY SUM(total) DESC
+    """, (str(hoy),))
+    diario = cursor.fetchall()
+
+    # ===== EMBEDS EN ORDEN CORRECTO =====
     embeds = [
         await crear_embed_ranking(
-            "TOP DIARIO",
-            "⚡",
-            discord.Color.gold(),
-            diario,
-            f"📆 Hoy • {hoy}"
+            "TOP MENSUAL",
+            "👑",
+            discord.Color.purple(),
+            mensual,
+            "🗓️ Mes actual"
         ),
         await crear_embed_ranking(
             "TOP SEMANAL",
@@ -122,24 +121,22 @@ async def actualizar_todos_los_ranking():
             f"📅 Desde {inicio_semana}"
         ),
         await crear_embed_ranking(
-            "TOP MENSUAL",
-            "👑",
-            discord.Color.purple(),
-            mensual,
-            f"🗓️ Mes actual"
+            "TOP DIARIO",
+            "⚡",
+            discord.Color.gold(),
+            diario,
+            f"📆 Hoy • {hoy}"
         )
     ]
 
-    mensajes = []
-    async for msg in channel.history(limit=5):
-        if msg.author == bot.user and msg.embeds:
-            mensajes.append(msg)
+    # ===== LIMPIAR MENSAJES DEL BOT =====
+    async for msg in channel.history(limit=10):
+        if msg.author == bot.user:
+            await msg.delete()
 
-    for i, embed in enumerate(embeds):
-        if i < len(mensajes):
-            await mensajes[i].edit(embed=embed)
-        else:
-            await channel.send(embed=embed)
+    # ===== PUBLICAR EN ORDEN =====
+    for embed in embeds:
+        await channel.send(embed=embed)
 
 # ===============================
 # TASK AUTOMÁTICO

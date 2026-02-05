@@ -2,7 +2,7 @@ import os
 import discord
 from discord.ext import commands, tasks
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import time
 
 # ===============================
@@ -10,8 +10,9 @@ import time
 # ===============================
 FORM_CHANNEL_ID = 1465764092978532547
 LOG_CHANNEL_ID = 1462316362515873947
-RANKING_CHANNEL_ID = 1462316362515873948
+RANKING_CHANNEL_ID = 1468791225619320894
 REGLAS_CHANNEL_ID = 1462316362004434978
+END_CHANNEL_ID = 1462316362515873947  # 👈 CAMBIA ESTO
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
@@ -54,7 +55,7 @@ async def reset_diario():
     db.commit()
 
 # ===============================
-# RANKING AUTOMÁTICO 23:59
+# RANKING AUTOMÁTICO
 # ===============================
 @tasks.loop(minutes=1)
 async def ranking_diario_automatico():
@@ -66,13 +67,13 @@ async def ranking_diario_automatico():
     if ahora.hour == 23 and ahora.minute == 59:
         if ultimo_ranking_publicado == hoy:
             return
-        await actualizar_ranking(bot)
+        await actualizar_ranking()
         ultimo_ranking_publicado = hoy
 
 # ===============================
-# FUNCIÓN RANKING DIARIO
+# FUNCIÓN RANKING
 # ===============================
-async def actualizar_ranking(bot):
+async def actualizar_ranking():
     hoy = str(date.today())
 
     cursor.execute("""
@@ -109,74 +110,6 @@ async def actualizar_ranking(bot):
     await channel.send(embed=embed)
 
 # ===============================
-# COMANDO !topdia (ADMIN)
-# ===============================
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def topdia(ctx):
-    hoy = str(date.today())
-
-    cursor.execute("""
-        SELECT username, total
-        FROM shulker
-        WHERE fecha = ?
-        ORDER BY total DESC
-    """, (hoy,))
-    datos = cursor.fetchall()
-
-    if not datos:
-        await ctx.send("📭 No hay registros hoy.")
-        return
-
-    descripcion = ""
-    for i, (user, total) in enumerate(datos, start=1):
-        descripcion += f"**{i}. {user}** — {total} shulker\n"
-
-    embed = discord.Embed(
-        title="🏆 Top Diario de Shulker",
-        description=descripcion,
-        color=discord.Color.gold()
-    )
-    embed.set_footer(text=f"Fecha: {hoy}")
-
-    await ctx.send(embed=embed)
-
-# ===============================
-# COMANDO !topsemana (ADMIN)
-# ===============================
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def topsemana(ctx):
-    hoy = date.today()
-    desde = str(hoy - timedelta(days=6))
-
-    cursor.execute("""
-        SELECT username, SUM(total) as total_semana
-        FROM shulker
-        WHERE fecha >= ?
-        GROUP BY user_id
-        ORDER BY total_semana DESC
-    """, (desde,))
-    datos = cursor.fetchall()
-
-    if not datos:
-        await ctx.send("📭 No hay registros esta semana.")
-        return
-
-    descripcion = ""
-    for i, (user, total) in enumerate(datos, start=1):
-        descripcion += f"**{i}. {user}** — {total} shulker\n"
-
-    embed = discord.Embed(
-        title="📆 Top Semanal de Shulker",
-        description=descripcion,
-        color=discord.Color.purple()
-    )
-    embed.set_footer(text="Últimos 7 días")
-
-    await ctx.send(embed=embed)
-
-# ===============================
 # EMBED REGLAS
 # ===============================
 async def enviar_reglas(channel):
@@ -186,20 +119,19 @@ async def enviar_reglas(channel):
         color=discord.Color.gold()
     )
 
-    embed.add_field(name="🤝 Respeto", value="Respeto total.\n❌ Insultos o discriminación", inline=False)
-    embed.add_field(name="🧠 Comunicación", value="Usa cada canal correctamente.\n❌ Spam", inline=False)
-    embed.add_field(name="📌 Canales importantes", value="Solo info oficial.", inline=False)
-    embed.add_field(name="🧰 Aportes", value="Registros honestos.\n❌ Mentir datos", inline=False)
-    embed.add_field(name="🛡️ Staff", value="Decisiones se respetan.", inline=False)
-    embed.add_field(name="🚫 Prohibido", value="Traición, robo, filtrar info", inline=False)
+    embed.add_field(name="🤝 Respeto", value="• Respeto total\n• ❌ Insultos o discriminación", inline=False)
+    embed.add_field(name="🧠 Comunicación", value="• Usa cada canal correctamente\n• ❌ Spam", inline=False)
+    embed.add_field(name="📌 Canales importantes", value="• No conversar\n• Solo info oficial", inline=False)
+    embed.add_field(name="🧰 Aportes", value="• Registros honestos\n• ❌ Mentir datos", inline=False)
+    embed.add_field(name="🛡️ Staff", value="• Decisiones se respetan\n• Reclamos en privado", inline=False)
+    embed.add_field(name="🚫 Prohibido", value="• Robo\n• Traición\n• Filtrar info", inline=False)
     embed.add_field(name="⚖️ Sanciones", value="Advertencia → Restricción → Expulsión", inline=False)
 
-    embed.set_footer(text="Permanecer en el servidor implica aceptar estas reglas")
-
+    embed.set_footer(text="Permanecer en el servidor implica aceptar las reglas")
     await channel.send(embed=embed)
 
 # ===============================
-# COMANDO PUBLICAR REGLAS
+# COMANDO ADMIN
 # ===============================
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -208,7 +140,6 @@ async def publicar_reglas(ctx):
     if not channel:
         await ctx.send("❌ Canal de reglas no encontrado.")
         return
-
     await enviar_reglas(channel)
     await ctx.send("✅ Reglas publicadas.", delete_after=5)
 
@@ -253,7 +184,22 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         )
         db.commit()
 
-        await actualizar_ranking(interaction.client)
+        await actualizar_ranking()
+
+        end_channel = interaction.client.get_channel(END_CHANNEL_ID)
+        if end_channel:
+            embed = discord.Embed(
+                title="📦 Registro de Shulker",
+                description=(
+                    f"👤 **Jugador:** {interaction.user.mention}\n"
+                    f"➕ **Agregado:** {cantidad_int}\n"
+                    f"📊 **Total hoy:** {nuevo_total}"
+                ),
+                color=discord.Color.green()
+            )
+            embed.set_footer(text="Buen trabajo 💪")
+            await end_channel.send(embed=embed)
+
         await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
 
 # ===============================

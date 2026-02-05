@@ -2,16 +2,14 @@ import os
 import discord
 from discord.ext import commands, tasks
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 import time
 
 # ===============================
 # CONFIGURACIÓN
 # ===============================
 FORM_CHANNEL_ID = 1465764092978532547
-LOG_CHANNEL_ID = 1462316362515873947
 RANKING_CHANNEL_ID = 1468791225619320894
-REGLAS_CHANNEL_ID = 1462316362004434978
 END_CHANNEL_ID = 1462316362515873947
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -45,16 +43,13 @@ db.commit()
 cooldowns = {}
 
 # ===============================
-# EMBED RANKING
+# CREAR EMBED RANKING
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer):
-    if not datos:
-        descripcion = "_Sin registros aún_"
-    else:
-        descripcion = ""
-        for i, (user, total) in enumerate(datos, start=1):
-            medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-            descripcion += f"{medalla} **{i}. {user}** — `{total}` shulker\n"
+    descripcion = "_Sin registros aún_" if not datos else ""
+    for i, (user, total) in enumerate(datos, start=1):
+        medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
+        descripcion += f"{medalla} **{i}. {user}** — `{total}` shulker\n"
 
     embed = discord.Embed(
         title=f"{emoji} {titulo}",
@@ -65,7 +60,7 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer):
     return embed
 
 # ===============================
-# ACTUALIZAR RANKINGS (ORDEN FIJO)
+# ACTUALIZAR RANKINGS (EDITA, NO SPAM)
 # ===============================
 async def actualizar_todos_los_ranking():
     channel = bot.get_channel(RANKING_CHANNEL_ID)
@@ -76,7 +71,6 @@ async def actualizar_todos_los_ranking():
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     inicio_mes = hoy.replace(day=1)
 
-    # ===== CONSULTAS =====
     cursor.execute("""
         SELECT username, SUM(total)
         FROM shulker
@@ -104,44 +98,27 @@ async def actualizar_todos_los_ranking():
     """, (str(hoy),))
     diario = cursor.fetchall()
 
-    # ===== EMBEDS EN ORDEN CORRECTO =====
     embeds = [
-        await crear_embed_ranking(
-            "TOP MENSUAL",
-            "👑",
-            discord.Color.purple(),
-            mensual,
-            "🗓️ Mes actual"
-        ),
-        await crear_embed_ranking(
-            "TOP SEMANAL",
-            "📈",
-            discord.Color.blue(),
-            semanal,
-            f"📅 Desde {inicio_semana}"
-        ),
-        await crear_embed_ranking(
-            "TOP DIARIO",
-            "⚡",
-            discord.Color.gold(),
-            diario,
-            f"📆 Hoy • {hoy}"
-        )
+        await crear_embed_ranking("TOP MENSUAL", "👑", discord.Color.purple(), mensual, "🗓️ Mes actual"),
+        await crear_embed_ranking("TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"📅 Desde {inicio_semana}"),
+        await crear_embed_ranking("TOP DIARIO", "⚡", discord.Color.gold(), diario, f"📆 Hoy • {hoy}")
     ]
 
-    # ===== LIMPIAR MENSAJES DEL BOT =====
-    async for msg in channel.history(limit=10):
-        if msg.author == bot.user:
-            await msg.delete()
+    mensajes = []
+    async for msg in channel.history(limit=5, oldest_first=True):
+        if msg.author == bot.user and msg.embeds:
+            mensajes.append(msg)
 
-    # ===== PUBLICAR EN ORDEN =====
-    for embed in embeds:
-        await channel.send(embed=embed)
+    for i, embed in enumerate(embeds):
+        if i < len(mensajes):
+            await mensajes[i].edit(embed=embed)
+        else:
+            await channel.send(embed=embed)
 
 # ===============================
-# TASK AUTOMÁTICO
+# TASK AUTOMÁTICO (SIN SPAM)
 # ===============================
-@tasks.loop(minutes=5)
+@tasks.loop(hours=1)
 async def ranking_automatico():
     await actualizar_todos_los_ranking()
 
@@ -156,10 +133,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         ahora = time.time()
 
         if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
-            await interaction.response.send_message(
-                "⏳ Debes esperar antes de volver a registrar.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("⏳ Espera antes de registrar.", ephemeral=True)
             return
 
         cooldowns[user_id] = ahora
@@ -175,10 +149,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        cursor.execute(
-            "SELECT total FROM shulker WHERE user_id = ? AND fecha = ?",
-            (user_id, hoy)
-        )
+        cursor.execute("SELECT total FROM shulker WHERE user_id = ? AND fecha = ?", (user_id, hoy))
         row = cursor.fetchone()
 
         nuevo_total = cantidad_int if not row else row[0] + cantidad_int
@@ -195,14 +166,9 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         if end_channel:
             embed = discord.Embed(
                 title="📦 Registro de Shulker",
-                description=(
-                    f"👤 **Jugador:** {interaction.user.mention}\n"
-                    f"➕ **Agregado:** {cantidad_int}\n"
-                    f"📊 **Total hoy:** {nuevo_total}"
-                ),
+                description=f"👤 {interaction.user.mention}\n➕ {cantidad_int}\n📊 Total hoy: {nuevo_total}",
                 color=discord.Color.green()
             )
-            embed.set_footer(text="Buen trabajo 💪")
             await end_channel.send(embed=embed)
 
         await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)

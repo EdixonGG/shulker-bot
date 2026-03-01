@@ -53,6 +53,20 @@ cooldowns = {}
 # ===============================
 # UTILIDADES
 # ===============================
+def format_number(num):
+    if num == 0:
+        return '0'
+    suffixes = ['', 'k', 'M', 'B', 'T']
+    i = 0
+    original_num = num
+    while num >= 1000 and i < len(suffixes) - 1:
+        num /= 1000
+        i += 1
+    if original_num % 1000 == 0 or i == 0:
+        return f"{int(num)}{suffixes[i]}"
+    else:
+        return f"{num:.1f}{suffixes[i]}"
+
 def calcular_equivalencias(total_shulkers):
     stacks = total_shulkers * 27
     bloques = stacks * 64
@@ -114,11 +128,11 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer):
         stacks, bloques, niveles, pv, resto = calcular_equivalencias(total_shulkers)
         descripcion += (
             "\n━━━━━━━━━━━━━━━━━━\n"
-            f"📦 **Total:** `{total_shulkers}` shulkers\n"
-            f"📦 **Stacks:** `{stacks}`\n"
-            f"🧱 **Bloques End:** `{bloques}`\n"
-            f"📈 **Niveles de Isla:** `{niveles}`\n"
-            f"🚀 **Equivalente:** `{pv} PV` + `{resto}` shulkers"
+            f"📦 **Total:** `{format_number(total_shulkers)}` shulkers\n"
+            f"🗃️ **Stacks:** `{format_number(stacks)}`\n"
+            f"🪨 **Bloques End:** `{format_number(bloques)}`\n"
+            f"📊 **Niveles de Isla:** `{format_number(niveles)}`\n"
+            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{resto}` shulkers"
         )
     embed = discord.Embed(
         title=f"{emoji} {titulo}",
@@ -149,12 +163,12 @@ async def crear_embed_mes_cerrado(mes):
     if total > 0:
         descripcion += (
             "\n━━━━━━━━━━━━━━━━━━\n"
-            f"📦 **Total del Mes:** `{total}` shulkers\n"
-            f"📈 **Niveles de Isla:** `{niveles}`\n"
-            f"🚀 **Equivalente:** `{pv} PV` + `{resto}` shulkers"
+            f"📦 **Total del Mes:** `{format_number(total)}` shulkers\n"
+            f"📊 **Niveles de Isla:** `{format_number(niveles)}`\n"
+            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{resto}` shulkers"
         )
     embed = discord.Embed(
-        title=f"🏆 TOP SHULKER — {fecha}",
+        title=f"🏅 TOP SHULKER — {fecha}",
         description=descripcion or "_Sin registros_",
         color=discord.Color.dark_gold()
     )
@@ -195,9 +209,9 @@ async def actualizar_todos_los_ranking():
     """, (str(hoy),))
     diario = cursor.fetchall()
     embeds = [
-        await crear_embed_ranking("TOP MENSUAL", "👑", discord.Color.purple(), mensual, "Mes actual"),
-        await crear_embed_ranking("TOP SEMANAL", "📈", discord.Color.blue(), semanal, "Semana actual"),
-        await crear_embed_ranking("TOP DIARIO", "⚡", discord.Color.gold(), diario, "Hoy")
+        await crear_embed_ranking("TOP MENSUAL", "🌙", discord.Color.purple(), mensual, "Mes actual"),
+        await crear_embed_ranking("TOP SEMANAL", "📅", discord.Color.blue(), semanal, "Semana actual"),
+        await crear_embed_ranking("TOP DIARIO", "⏰", discord.Color.gold(), diario, "Hoy")
     ]
     async for msg in channel.history(limit=10):
         if msg.author == bot.user:
@@ -269,7 +283,7 @@ async def on_ready():
     if channel:
         await channel.send(
             embed=discord.Embed(
-                title="🧰 Registro de Shulker",
+                title="🔧 Registro de Shulker",
                 description="Presiona el botón para registrar.",
                 color=discord.Color.green()
             ),

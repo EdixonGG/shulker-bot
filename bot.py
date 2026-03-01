@@ -89,14 +89,19 @@ async def crear_embed_historial(mes, ranking, total_shulker):
     return embed
 
 # ===============================
-# CIERRE MENSUAL AUTOMÁTICO
+# 🔒 CIERRE MENSUAL AUTOMÁTICO (MODIFICADO)
 # ===============================
 async def cerrar_meses_faltantes():
+    hoy = date.today()
+    mes_actual = hoy.strftime("%Y-%m")
+
     cursor.execute("""
         SELECT DISTINCT substr(fecha,1,7)
         FROM shulker
+        WHERE substr(fecha,1,7) < ?
         ORDER BY 1
-    """)
+    """, (mes_actual,))
+
     meses = [m[0] for m in cursor.fetchall()]
 
     for mes in meses:
@@ -105,7 +110,7 @@ async def cerrar_meses_faltantes():
             (mes,)
         )
         if cursor.fetchone():
-            continue  # ya existe
+            continue  # ya cerrado
 
         inicio = date.fromisoformat(mes + "-01")
         fin = (inicio.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
@@ -122,7 +127,7 @@ async def cerrar_meses_faltantes():
         total_mes = sum(r[1] for r in ranking)
 
         if total_mes == 0:
-            continue  # no guardar meses vacíos
+            continue
 
         cursor.execute("""
             INSERT INTO historial_mensual (mes, ranking, total_shulker, creado_en)
@@ -131,11 +136,12 @@ async def cerrar_meses_faltantes():
             mes,
             json.dumps(ranking),
             total_mes,
-            str(date.today())
+            str(hoy)
         ))
 
         db.commit()
-        print(f"✅ Mes reconstruido: {mes}")
+        print(f"✅ Mes cerrado definitivamente: {mes}")
+
 # ===============================
 # ACTUALIZAR RANKINGS
 # ===============================
@@ -178,11 +184,9 @@ async def actualizar_todos_los_ranking():
         ORDER BY SUM(total) DESC
     """, str(hoy))
 
-    # 🔥 ÚLTIMO MES CON ACTIVIDAD REAL
     cursor.execute("""
         SELECT mes, ranking, total_shulker
         FROM historial_mensual
-        WHERE total_shulker > 0
         ORDER BY mes DESC
         LIMIT 1
     """)
@@ -191,11 +195,7 @@ async def actualizar_todos_los_ranking():
     embeds = []
 
     if hist:
-        try:
-            ranking_hist = json.loads(hist[1])
-        except:
-            ranking_hist = []
-
+        ranking_hist = json.loads(hist[1])
         embeds.append(await crear_embed_historial(hist[0], ranking_hist, hist[2]))
 
     def embed_top(titulo, emoji, color, datos):
@@ -302,4 +302,3 @@ async def on_ready():
         )
 
 bot.run(TOKEN)
-

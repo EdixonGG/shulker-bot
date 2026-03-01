@@ -12,6 +12,9 @@ RANKING_CHANNEL_ID = 1468791225619320894
 END_CHANNEL_ID = 1462316362515873947
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
+# URLs para imágenes/GIFs (cámbialas si quieres otras)
+SHULKER_THUMBNAIL = "https://i.redd.it/y8w7u4x0h9t51.gif"  # Shulker animado
+END_BACKGROUND = "https://i.redd.it/t44kdp37tci41.gif"  # Fondo End animado
 # ===============================
 # INTENTS
 # ===============================
@@ -117,28 +120,27 @@ def cerrar_mes_si_corresponde():
 # EMBEDS
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer):
-    descripcion = ""
-    for i, (user, total) in enumerate(datos, start=1):
+    embed = discord.Embed(title=f"{emoji} {titulo}", color=color)
+    embed.set_thumbnail(url=SHULKER_THUMBNAIL)  # Imagen animada al lado
+    ranking_text = ""
+    for i, (user, total) in enumerate(datos[:10], start=1):  # Top 10
         medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-        descripcion += f"{medalla} **{i}. {user}** — `{total}` shulker\n"
+        ranking_text += f"{medalla} **{i}. {user}** — `{format_number(total)}` shulker\n"
+    if not ranking_text:
+        ranking_text = "_Sin registros_"
+    embed.add_field(name="🏆 Ranking", value=ranking_text, inline=False)
+    
     total_shulkers = sum(t for _, t in datos)
-    if total_shulkers == 0:
-        descripcion = "_Sin registros_"
-    else:
+    if total_shulkers > 0:
         stacks, bloques, niveles, pv, resto = calcular_equivalencias(total_shulkers)
-        descripcion += (
-            "\n━━━━━━━━━━━━━━━━━━\n"
+        equiv_text = (
             f"📦 **Total:** `{format_number(total_shulkers)}` shulkers\n"
             f"🗃️ **Stacks:** `{format_number(stacks)}`\n"
             f"🪨 **Bloques End:** `{format_number(bloques)}`\n"
             f"📊 **Niveles de Isla:** `{format_number(niveles)}`\n"
-            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{resto}` shulkers"
+            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{format_number(resto)}` shulkers"
         )
-    embed = discord.Embed(
-        title=f"{emoji} {titulo}",
-        description=descripcion,
-        color=color
-    )
+        embed.add_field(name="📈 Equivalencias", value=equiv_text, inline=False)
     embed.set_footer(text=footer)
     return embed
 async def crear_embed_mes_cerrado(mes):
@@ -151,27 +153,25 @@ async def crear_embed_mes_cerrado(mes):
     datos = cursor.fetchall()
     cursor.execute("SELECT total_general FROM shulker_cerrado WHERE mes = ?", (mes,))
     total = cursor.fetchone()[0]
-    stacks, bloques, niveles, pv, resto = calcular_equivalencias(total)
     fecha = fecha_linda(f"{mes}-01")
-    descripcion = ""
-    if not datos:
-        descripcion += "_Sin registros_"
-    else:
-        for i, (user, t) in enumerate(datos, start=1):
-            medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-            descripcion += f"{medalla} **{i}. {user}** — `{t}` shulker\n"
+    embed = discord.Embed(title=f"🏅 TOP SHULKER — {fecha}", color=discord.Color.dark_gold())
+    embed.set_thumbnail(url=SHULKER_THUMBNAIL)
+    embed.set_image(url=END_BACKGROUND)  # Fondo animado abajo
+    ranking_text = ""
+    for i, (user, t) in enumerate(datos, start=1):
+        medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
+        ranking_text += f"{medalla} **{i}. {user}** — `{format_number(t)}` shulker\n"
+    if not ranking_text:
+        ranking_text = "_Sin registros_"
+    embed.add_field(name="🏆 Ranking", value=ranking_text, inline=False)
     if total > 0:
-        descripcion += (
-            "\n━━━━━━━━━━━━━━━━━━\n"
+        stacks, bloques, niveles, pv, resto = calcular_equivalencias(total)
+        equiv_text = (
             f"📦 **Total del Mes:** `{format_number(total)}` shulkers\n"
             f"📊 **Niveles de Isla:** `{format_number(niveles)}`\n"
-            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{resto}` shulkers"
+            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{format_number(resto)}` shulkers"
         )
-    embed = discord.Embed(
-        title=f"🏅 TOP SHULKER — {fecha}",
-        description=descripcion or "_Sin registros_",
-        color=discord.Color.dark_gold()
-    )
+        embed.add_field(name="📈 Equivalencias", value=equiv_text, inline=False)
     embed.set_footer(text="📁 Historial mensual")
     return embed
 # ===============================

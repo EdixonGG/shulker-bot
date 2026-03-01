@@ -18,11 +18,11 @@ COOLDOWN_SECONDS = 60
 # ===============================
 # INTENTS
 # ===============================
-INTENTS = discord.Intents.default()
-INTENTS.message_content = True
-INTENTS.members = True
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=INTENTS)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ===============================
 # BASE DE DATOS
@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS historial_mensual (
 """)
 
 db.commit()
+
+# ⏳ cooldowns EN MEMORIA
 cooldowns = {}
 
 # ===============================
@@ -89,7 +91,7 @@ async def crear_embed_historial(mes, ranking, total_shulker):
     return embed
 
 # ===============================
-# 🔒 CIERRE MENSUAL AUTOMÁTICO (MODIFICADO)
+# 🔒 CIERRE MENSUAL AUTOMÁTICO
 # ===============================
 async def cerrar_meses_faltantes():
     hoy = date.today()
@@ -105,12 +107,9 @@ async def cerrar_meses_faltantes():
     meses = [m[0] for m in cursor.fetchall()]
 
     for mes in meses:
-        cursor.execute(
-            "SELECT 1 FROM historial_mensual WHERE mes = ?",
-            (mes,)
-        )
+        cursor.execute("SELECT 1 FROM historial_mensual WHERE mes = ?", (mes,))
         if cursor.fetchone():
-            continue  # ya cerrado
+            continue
 
         inicio = date.fromisoformat(mes + "-01")
         fin = (inicio.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
@@ -132,15 +131,10 @@ async def cerrar_meses_faltantes():
         cursor.execute("""
             INSERT INTO historial_mensual (mes, ranking, total_shulker, creado_en)
             VALUES (?, ?, ?, ?)
-        """, (
-            mes,
-            json.dumps(ranking),
-            total_mes,
-            str(hoy)
-        ))
+        """, (mes, json.dumps(ranking), total_mes, str(hoy)))
 
         db.commit()
-        print(f"✅ Mes cerrado definitivamente: {mes}")
+        print(f"✅ Mes cerrado: {mes}")
 
 # ===============================
 # ACTUALIZAR RANKINGS
@@ -195,8 +189,11 @@ async def actualizar_todos_los_ranking():
     embeds = []
 
     if hist:
-        ranking_hist = json.loads(hist[1])
-        embeds.append(await crear_embed_historial(hist[0], ranking_hist, hist[2]))
+        embeds.append(await crear_embed_historial(
+            hist[0],
+            json.loads(hist[1]),
+            hist[2]
+        ))
 
     def embed_top(titulo, emoji, color, datos):
         desc = ""
@@ -241,40 +238,37 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
     cantidad = discord.ui.TextInput(label="¿Cuántas shulker colocaste?")
 
     async def on_submit(self, interaction: discord.Interaction):
-    user_id = interaction.user.id
-    ahora = time.time()
+        user_id = interaction.user.id
+        ahora = time.time()
 
-    # ⏳ Verificar cooldown
-    if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
-        restante = int(COOLDOWN_SECONDS - (ahora - cooldowns[user_id]))
-        return await interaction.response.send_message(
-            f"⏳ Espera **{restante}s** antes de volver a registrar.",
-            ephemeral=True
-        )
+        if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
+            restante = int(COOLDOWN_SECONDS - (ahora - cooldowns[user_id]))
+            return await interaction.response.send_message(
+                f"⏳ Espera **{restante}s** antes de volver a registrar.",
+                ephemeral=True
+            )
 
-    # ✅ Validar cantidad ANTES de aplicar cooldown
-    try:
-        cantidad = int(self.cantidad.value)
-        if cantidad <= 0:
-            raise ValueError
-    except:
-        return await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
+        try:
+            cantidad = int(self.cantidad.value)
+            if cantidad <= 0:
+                raise ValueError
+        except:
+            return await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
 
-    # ⏱️ Aplicar cooldown SOLO si fue válido
-    cooldowns[user_id] = ahora
+        cooldowns[user_id] = ahora
 
-    hoy = str(date.today())
-    username = interaction.user.display_name
+        hoy = str(date.today())
+        username = interaction.user.display_name
 
-    cursor.execute("""
-        INSERT INTO shulker VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id, fecha)
-        DO UPDATE SET total = total + ?
-    """, (user_id, username, hoy, cantidad, cantidad))
-    db.commit()
+        cursor.execute("""
+            INSERT INTO shulker VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, fecha)
+            DO UPDATE SET total = total + ?
+        """, (user_id, username, hoy, cantidad, cantidad))
+        db.commit()
 
-    await actualizar_todos_los_ranking()
-    await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
+        await actualizar_todos_los_ranking()
+        await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
 
 # ===============================
 # BOTÓN
@@ -309,4 +303,3 @@ async def on_ready():
         )
 
 bot.run(TOKEN)
-

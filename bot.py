@@ -11,7 +11,6 @@ import json
 # ===============================
 FORM_CHANNEL_ID = 1465764092978532547
 RANKING_CHANNEL_ID = 1468791225619320894
-END_CHANNEL_ID = 1462316362515873947
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
@@ -36,7 +35,8 @@ CREATE TABLE IF NOT EXISTS shulker (
     user_id INTEGER,
     username TEXT,
     fecha TEXT,
-    total INTEGER
+    total INTEGER,
+    PRIMARY KEY (user_id, fecha)
 )
 """)
 
@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS historial_mensual (
 """)
 
 db.commit()
-
 cooldowns = {}
 
 # ===============================
@@ -62,13 +61,6 @@ def format_number(num: int) -> str:
     if num >= 1_000:
         return f"{num // 1_000}K"
     return str(num)
-
-def nombre_mes(fecha: date):
-    meses = [
-        "Enero","Febrero","Marzo","Abril","Mayo","Junio",
-        "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
-    ]
-    return f"{fecha.day} de {meses[fecha.month - 1]} del {fecha.year}"
 
 # ===============================
 # EMBED HISTÓRICO MENSUAL
@@ -100,8 +92,7 @@ async def crear_embed_historial(mes, ranking, total_shulker):
 # CIERRE MENSUAL AUTOMÁTICO
 # ===============================
 async def cerrar_meses_faltantes():
-    hoy = date.today()
-    cursor.execute("SELECT DISTINCT substr(fecha, 1, 7) FROM shulker")
+    cursor.execute("SELECT DISTINCT substr(fecha,1,7) FROM shulker")
     meses = [m[0] for m in cursor.fetchall()]
 
     for mes in meses:
@@ -147,62 +138,71 @@ async def actualizar_todos_los_ranking():
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     inicio_mes = hoy.replace(day=1)
 
-    cursor.execute("""
-    SELECT * FROM historial_mensual
-    WHERE total_shulker > 0
-    ORDER BY mes DESC
-    LIMIT 1
-""")
-        FROM shulker
-        WHERE fecha >= ?
-        GROUP BY user_id
-        ORDER BY SUM(total) DESC
-    """, (str(inicio_mes),))
-    mensual = cursor.fetchall()
+    def get_ranking(query, param):
+        cursor.execute(query, (param,))
+        return cursor.fetchall()
 
-    cursor.execute("""
+    mensual = get_ranking("""
         SELECT username, SUM(total)
         FROM shulker
         WHERE fecha >= ?
         GROUP BY user_id
         ORDER BY SUM(total) DESC
-    """, (str(inicio_semana),))
-    semanal = cursor.fetchall()
+    """, str(inicio_mes))
 
-    cursor.execute("""
+    semanal = get_ranking("""
+        SELECT username, SUM(total)
+        FROM shulker
+        WHERE fecha >= ?
+        GROUP BY user_id
+        ORDER BY SUM(total) DESC
+    """, str(inicio_semana))
+
+    diario = get_ranking("""
         SELECT username, SUM(total)
         FROM shulker
         WHERE fecha = ?
         GROUP BY user_id
         ORDER BY SUM(total) DESC
-    """, (str(hoy),))
-    diario = cursor.fetchall()
+    """, str(hoy))
 
-    cursor.execute("SELECT * FROM historial_mensual ORDER BY mes DESC LIMIT 1")
+    # 🔥 ÚLTIMO MES CON ACTIVIDAD REAL
+    cursor.execute("""
+        SELECT mes, ranking, total_shulker
+        FROM historial_mensual
+        WHERE total_shulker > 0
+        ORDER BY mes DESC
+        LIMIT 1
+    """)
     hist = cursor.fetchone()
 
     embeds = []
 
     if hist:
-        ranking = json.loads(hist[1])
-        embeds.append(await crear_embed_historial(hist[0], ranking, hist[2]))
+        try:
+            ranking_hist = json.loads(hist[1])
+        except:
+            ranking_hist = []
+
+        embeds.append(await crear_embed_historial(hist[0], ranking_hist, hist[2]))
 
     def embed_top(titulo, emoji, color, datos):
         desc = ""
         for i, (u, t) in enumerate(datos, 1):
             medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
             desc += f"{medalla} **{u}** — `{format_number(t)}`\n"
+
         return discord.Embed(
             title=f"{emoji} {titulo}",
             description=desc or "_Sin registros_",
             color=color
         )
 
-    embeds += [
+    embeds.extend([
         embed_top("TOP MENSUAL ACTUAL", "👑", discord.Color.purple(), mensual),
         embed_top("TOP SEMANAL", "📈", discord.Color.blue(), semanal),
         embed_top("TOP DIARIO", "⚡", discord.Color.gold(), diario)
-    ]
+    ])
 
     mensajes = []
     async for msg in channel.history(limit=10, oldest_first=True):
@@ -247,18 +247,14 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        cursor.execute("SELECT total FROM shulker WHERE user_id = ? AND fecha = ?", (user_id, hoy))
-        row = cursor.fetchone()
-        nuevo_total = cantidad if not row else row[0] + cantidad
-
-        cursor.execute(
-            "REPLACE INTO shulker VALUES (?, ?, ?, ?)",
-            (user_id, username, hoy, nuevo_total)
-        )
+        cursor.execute("""
+            INSERT INTO shulker VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, fecha)
+            DO UPDATE SET total = total + ?
+        """, (user_id, username, hoy, cantidad, cantidad))
         db.commit()
 
         await actualizar_todos_los_ranking()
-
         await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
 
 # ===============================
@@ -278,6 +274,7 @@ class ShulkerButton(discord.ui.View):
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
+
     if not ranking_automatico.is_running():
         ranking_automatico.start()
 
@@ -293,4 +290,3 @@ async def on_ready():
         )
 
 bot.run(TOKEN)
-

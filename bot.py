@@ -148,7 +148,11 @@ async def actualizar_todos_los_ranking():
     inicio_mes = hoy.replace(day=1)
 
     cursor.execute("""
-        SELECT username, SUM(total)
+    SELECT * FROM historial_mensual
+    WHERE total_shulker > 0
+    ORDER BY mes DESC
+    LIMIT 1
+""")
         FROM shulker
         WHERE fecha >= ?
         GROUP BY user_id
@@ -289,3 +293,4 @@ async def on_ready():
         )
 
 bot.run(TOKEN)
+

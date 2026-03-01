@@ -92,13 +92,20 @@ async def crear_embed_historial(mes, ranking, total_shulker):
 # CIERRE MENSUAL AUTOMÁTICO
 # ===============================
 async def cerrar_meses_faltantes():
-    cursor.execute("SELECT DISTINCT substr(fecha,1,7) FROM shulker")
+    cursor.execute("""
+        SELECT DISTINCT substr(fecha,1,7)
+        FROM shulker
+        ORDER BY 1
+    """)
     meses = [m[0] for m in cursor.fetchall()]
 
     for mes in meses:
-        cursor.execute("SELECT 1 FROM historial_mensual WHERE mes = ?", (mes,))
+        cursor.execute(
+            "SELECT 1 FROM historial_mensual WHERE mes = ?",
+            (mes,)
+        )
         if cursor.fetchone():
-            continue
+            continue  # ya existe
 
         inicio = date.fromisoformat(mes + "-01")
         fin = (inicio.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
@@ -114,16 +121,21 @@ async def cerrar_meses_faltantes():
         ranking = cursor.fetchall()
         total_mes = sum(r[1] for r in ranking)
 
+        if total_mes == 0:
+            continue  # no guardar meses vacíos
+
         cursor.execute("""
-            INSERT INTO historial_mensual VALUES (?, ?, ?, ?)
+            INSERT INTO historial_mensual (mes, ranking, total_shulker, creado_en)
+            VALUES (?, ?, ?, ?)
         """, (
             mes,
             json.dumps(ranking),
             total_mes,
             str(date.today())
         ))
-        db.commit()
 
+        db.commit()
+        print(f"✅ Mes reconstruido: {mes}")
 # ===============================
 # ACTUALIZAR RANKINGS
 # ===============================
@@ -290,3 +302,4 @@ async def on_ready():
         )
 
 bot.run(TOKEN)
+

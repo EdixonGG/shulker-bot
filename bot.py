@@ -241,33 +241,40 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
     cantidad = discord.ui.TextInput(label="¿Cuántas shulker colocaste?")
 
     async def on_submit(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        ahora = time.time()
+    user_id = interaction.user.id
+    ahora = time.time()
 
-        if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
-            return await interaction.response.send_message("⏳ Espera antes de registrar.", ephemeral=True)
+    # ⏳ Verificar cooldown
+    if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
+        restante = int(COOLDOWN_SECONDS - (ahora - cooldowns[user_id]))
+        return await interaction.response.send_message(
+            f"⏳ Espera **{restante}s** antes de volver a registrar.",
+            ephemeral=True
+        )
 
-        cooldowns[user_id] = ahora
+    # ✅ Validar cantidad ANTES de aplicar cooldown
+    try:
+        cantidad = int(self.cantidad.value)
+        if cantidad <= 0:
+            raise ValueError
+    except:
+        return await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
 
-        try:
-            cantidad = int(self.cantidad.value)
-            if cantidad <= 0:
-                raise ValueError
-        except:
-            return await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
+    # ⏱️ Aplicar cooldown SOLO si fue válido
+    cooldowns[user_id] = ahora
 
-        hoy = str(date.today())
-        username = interaction.user.display_name
+    hoy = str(date.today())
+    username = interaction.user.display_name
 
-        cursor.execute("""
-            INSERT INTO shulker VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, fecha)
-            DO UPDATE SET total = total + ?
-        """, (user_id, username, hoy, cantidad, cantidad))
-        db.commit()
+    cursor.execute("""
+        INSERT INTO shulker VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, fecha)
+        DO UPDATE SET total = total + ?
+    """, (user_id, username, hoy, cantidad, cantidad))
+    db.commit()
 
-        await actualizar_todos_los_ranking()
-        await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
+    await actualizar_todos_los_ranking()
+    await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
 
 # ===============================
 # BOTÓN
@@ -302,3 +309,4 @@ async def on_ready():
         )
 
 bot.run(TOKEN)
+

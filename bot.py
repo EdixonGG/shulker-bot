@@ -2,9 +2,17 @@ import os
 import time
 import sqlite3
 import discord
-import shutil  # nuevo: para copiar el archivo viejo
+import shutil
 from datetime import date, timedelta
 from discord.ext import commands, tasks
+
+# ===============================
+# CREAR EL BOT AL INICIO (OBLIGATORIO ANTES DE @bot)
+# ===============================
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ===============================
 # CONFIGURACIÓN
@@ -28,12 +36,11 @@ OLD_DB_PATH = "shulker.db"  # el que está en la raíz actualmente
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR, exist_ok=True)
 
-# Si existe el viejo .db en la raíz Y NO existe aún en /data → migrar
 if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
     print("⚡ Migrando shulker.db viejo → /data/shulker.db")
     shutil.copy2(OLD_DB_PATH, DB_PATH)
     print("✅ Migración completada")
-    # Opcional: descomenta si quieres borrar el viejo después de confirmar que todo funciona
+    # Opcional: descomenta después de confirmar que todo funciona bien
     # os.remove(OLD_DB_PATH)
 else:
     if os.path.exists(DB_PATH):
@@ -44,7 +51,7 @@ else:
 # ===============================
 # BASE DE DATOS
 # ===============================
-db = sqlite3.connect(DB_PATH)  # ← cambiado: usa la ruta persistente
+db = sqlite3.connect(DB_PATH)
 cursor = db.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS shulker (
@@ -146,6 +153,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         label="¿Cuántas shulker colocaste?",
         required=True
     )
+
     async def on_submit(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         ahora = time.time()
@@ -234,9 +242,8 @@ async def on_ready():
     
     channel = bot.get_channel(FORM_CHANNEL_ID)
     if channel:
-        # Importante: solo envía el mensaje + botón la primera vez.
-        # Después del primer deploy, comenta las siguientes líneas o elimínalas
-        # para que no se envíe cada vez que reinicia.
+        # Solo envía el mensaje + botón la PRIMERA vez
+        # Después del primer deploy exitoso → comenta o elimina estas líneas
         await channel.send(
             embed=discord.Embed(
                 title="🧰 Registro de Shulker",
@@ -247,7 +254,6 @@ async def on_ready():
         )
 
 # ===============================
-# RUN
+# INICIAR EL BOT
 # ===============================
-bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
 bot.run(TOKEN)

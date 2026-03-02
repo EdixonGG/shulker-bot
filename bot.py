@@ -1,32 +1,35 @@
 import os
-import discord
-from discord.ext import commands, tasks
-import sqlite3
-from datetime import date, timedelta
 import time
+import sqlite3
+import discord
+from datetime import date, timedelta
+from discord.ext import commands, tasks
+
 # ===============================
 # CONFIGURACIÓN
 # ===============================
 FORM_CHANNEL_ID = 1465764092978532547
 RANKING_CHANNEL_ID = 1468791225619320894
 END_CHANNEL_ID = 1462316362515873947
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
-# URLs para imágenes/GIFs (cámbialas si quieres otras)
-SHULKER_THUMBNAIL = "https://i.redd.it/y8w7u4x0h9t51.gif"  # Shulker animado
-END_BACKGROUND = "https://i.redd.it/t44kdp37tci41.gif"  # Fondo End animado
+
 # ===============================
 # INTENTS
 # ===============================
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 INTENTS.members = True
+
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
+
 # ===============================
 # BASE DE DATOS
 # ===============================
 db = sqlite3.connect("shulker.db")
 cursor = db.cursor()
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS shulker (
     user_id INTEGER,
@@ -35,155 +38,40 @@ CREATE TABLE IF NOT EXISTS shulker (
     total INTEGER
 )
 """)
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS shulker_mensual (
-    user_id INTEGER,
-    username TEXT,
-    mes TEXT,
-    total INTEGER,
-    PRIMARY KEY (user_id, mes)
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS shulker_cerrado (
-    mes TEXT PRIMARY KEY,
-    fecha_cierre TEXT,
-    total_general INTEGER
-)
-""")
 db.commit()
-cooldowns = {}
-# ===============================
-# UTILIDADES
-# ===============================
-def format_number(num):
-    if num == 0:
-        return '0'
-    suffixes = ['', 'k', 'M', 'B', 'T']
-    i = 0
-    original_num = num
-    while num >= 1000 and i < len(suffixes) - 1:
-        num /= 1000
-        i += 1
-    if original_num % 1000 == 0 or i == 0:
-        return f"{int(num)}{suffixes[i]}"
-    else:
-        return f"{num:.1f}{suffixes[i]}"
 
-def calcular_equivalencias(total_shulkers):
-    stacks = total_shulkers * 27
-    bloques = stacks * 64
-    niveles = bloques * 9
-    pv = total_shulkers // 27
-    resto = total_shulkers % 27
-    return stacks, bloques, niveles, pv, resto
-def fecha_linda(fecha_iso):
-    meses = {
-        "01": "Enero", "02": "Febrero", "03": "Marzo",
-        "04": "Abril", "05": "Mayo", "06": "Junio",
-        "07": "Julio", "08": "Agosto", "09": "Septiembre",
-        "10": "Octubre", "11": "Noviembre", "12": "Diciembre"
-    }
-    y, m, d = fecha_iso.split("-")
-    return f"{int(d)} de {meses[m]} del {y}"
-def actualizar_mensual(user_id, username, cantidad):
-    mes = date.today().strftime("%Y-%m")
-    cursor.execute(
-        "SELECT total FROM shulker_mensual WHERE user_id = ? AND mes = ?",
-        (user_id, mes)
-    )
-    row = cursor.fetchone()
-    nuevo = cantidad if not row else row[0] + cantidad
-    cursor.execute(
-        "REPLACE INTO shulker_mensual (user_id, username, mes, total) VALUES (?, ?, ?, ?)",
-        (user_id, username, mes, nuevo)
-    )
-    db.commit()
-def cerrar_mes_si_corresponde():
-    hoy = date.today()
-    mes_anterior = (hoy.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
-    cursor.execute("SELECT mes FROM shulker_cerrado WHERE mes = ?", (mes_anterior,))
-    if cursor.fetchone():
-        return
-    cursor.execute(
-        "SELECT SUM(total) FROM shulker_mensual WHERE mes = ?",
-        (mes_anterior,)
-    )
-    total = cursor.fetchone()[0] or 0
-    if total > 0:
-        cursor.execute(
-            "INSERT INTO shulker_cerrado (mes, fecha_cierre, total_general) VALUES (?, ?, ?)",
-            (mes_anterior, str(date.today()), total)
-        )
-        db.commit()
+cooldowns = {}
+
 # ===============================
-# EMBEDS
+# CREAR EMBED RANKING
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer):
-    embed = discord.Embed(title=f"{emoji} {titulo}", color=color)
-    embed.set_thumbnail(url=SHULKER_THUMBNAIL)  # Imagen animada al lado
-    ranking_text = ""
-    for i, (user, total) in enumerate(datos[:10], start=1):  # Top 10
+    descripcion = "_Sin registros aún_" if not datos else ""
+
+    for i, (user, total) in enumerate(datos, start=1):
         medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-        ranking_text += f"{medalla} **{i}. {user}** — `{format_number(total)}` shulker\n"
-    if not ranking_text:
-        ranking_text = "_Sin registros_"
-    embed.add_field(name="🏆 Ranking", value=ranking_text, inline=False)
-    
-    total_shulkers = sum(t for _, t in datos)
-    if total_shulkers > 0:
-        stacks, bloques, niveles, pv, resto = calcular_equivalencias(total_shulkers)
-        equiv_text = (
-            f"📦 **Total:** `{format_number(total_shulkers)}` shulkers\n"
-            f"🗃️ **Stacks:** `{format_number(stacks)}`\n"
-            f"🪨 **Bloques End:** `{format_number(bloques)}`\n"
-            f"📊 **Niveles de Isla:** `{format_number(niveles)}`\n"
-            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{format_number(resto)}` shulkers"
-        )
-        embed.add_field(name="📈 Equivalencias", value=equiv_text, inline=False)
+        descripcion += f"{medalla} **{i}. {user}** — {total} shulker\n"
+
+    embed = discord.Embed(
+        title=f"{emoji} {titulo}",
+        description=descripcion,
+        color=color
+    )
     embed.set_footer(text=footer)
     return embed
-async def crear_embed_mes_cerrado(mes):
-    cursor.execute("""
-        SELECT username, total
-        FROM shulker_mensual
-        WHERE mes = ?
-        ORDER BY total DESC
-    """, (mes,))
-    datos = cursor.fetchall()
-    cursor.execute("SELECT total_general FROM shulker_cerrado WHERE mes = ?", (mes,))
-    total = cursor.fetchone()[0]
-    fecha = fecha_linda(f"{mes}-01")
-    embed = discord.Embed(title=f"🏅 TOP SHULKER — {fecha}", color=discord.Color.dark_gold())
-    embed.set_thumbnail(url=SHULKER_THUMBNAIL)
-    embed.set_image(url=END_BACKGROUND)  # Fondo animado abajo
-    ranking_text = ""
-    for i, (user, t) in enumerate(datos, start=1):
-        medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-        ranking_text += f"{medalla} **{i}. {user}** — `{format_number(t)}` shulker\n"
-    if not ranking_text:
-        ranking_text = "_Sin registros_"
-    embed.add_field(name="🏆 Ranking", value=ranking_text, inline=False)
-    if total > 0:
-        stacks, bloques, niveles, pv, resto = calcular_equivalencias(total)
-        equiv_text = (
-            f"📦 **Total del Mes:** `{format_number(total)}` shulkers\n"
-            f"📊 **Niveles de Isla:** `{format_number(niveles)}`\n"
-            f"⚖️ **Equivalente:** `{format_number(pv)} PV` + `{format_number(resto)}` shulkers"
-        )
-        embed.add_field(name="📈 Equivalencias", value=equiv_text, inline=False)
-    embed.set_footer(text="📁 Historial mensual")
-    return embed
+
 # ===============================
-# RANKINGS
+# ACTUALIZAR RANKINGS (EDITA, NO SPAM)
 # ===============================
 async def actualizar_todos_los_ranking():
     channel = bot.get_channel(RANKING_CHANNEL_ID)
     if not channel:
         return
+
     hoy = date.today()
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     inicio_mes = hoy.replace(day=1)
+
     cursor.execute("""
         SELECT username, SUM(total)
         FROM shulker
@@ -192,6 +80,7 @@ async def actualizar_todos_los_ranking():
         ORDER BY SUM(total) DESC
     """, (str(inicio_mes),))
     mensual = cursor.fetchall()
+
     cursor.execute("""
         SELECT username, SUM(total)
         FROM shulker
@@ -200,6 +89,7 @@ async def actualizar_todos_los_ranking():
         ORDER BY SUM(total) DESC
     """, (str(inicio_semana),))
     semanal = cursor.fetchall()
+
     cursor.execute("""
         SELECT username, SUM(total)
         FROM shulker
@@ -208,87 +98,150 @@ async def actualizar_todos_los_ranking():
         ORDER BY SUM(total) DESC
     """, (str(hoy),))
     diario = cursor.fetchall()
+
     embeds = [
-        await crear_embed_ranking("TOP MENSUAL", "🌙", discord.Color.purple(), mensual, "Mes actual"),
-        await crear_embed_ranking("TOP SEMANAL", "📅", discord.Color.blue(), semanal, "Semana actual"),
-        await crear_embed_ranking("TOP DIARIO", "⏰", discord.Color.gold(), diario, "Hoy")
+        await crear_embed_ranking(
+            "TOP MENSUAL", "👑", discord.Color.purple(),
+            mensual, "🗓️ Mes actual"
+        ),
+        await crear_embed_ranking(
+            "TOP SEMANAL", "📈", discord.Color.blue(),
+            semanal, f"📅 Desde {inicio_semana}"
+        ),
+        await crear_embed_ranking(
+            "TOP DIARIO", "⚡", discord.Color.gold(),
+            diario, f"📆 Hoy • {hoy}"
+        )
     ]
-    async for msg in channel.history(limit=10):
-        if msg.author == bot.user:
-            await msg.delete()
-    cursor.execute("SELECT mes FROM shulker_cerrado ORDER BY mes DESC LIMIT 1")
-    row = cursor.fetchone()
-    if row:
-        mes = row[0]
-        cursor.execute("SELECT total_general FROM shulker_cerrado WHERE mes = ?", (mes,))
-        total = cursor.fetchone()[0]
-        if total > 0:
-            await channel.send(embed=await crear_embed_mes_cerrado(mes))
-    for embed in embeds:
-        await channel.send(embed=embed)
+
+    mensajes = []
+    async for msg in channel.history(limit=5, oldest_first=True):
+        if msg.author == bot.user and msg.embeds:
+            mensajes.append(msg)
+
+    for i, embed in enumerate(embeds):
+        if i < len(mensajes):
+            await mensajes[i].edit(embed=embed)
+        else:
+            await channel.send(embed=embed)
+
 # ===============================
-# TASK
+# TASK AUTOMÁTICO
 # ===============================
 @tasks.loop(hours=1)
 async def ranking_automatico():
-    cerrar_mes_si_corresponde()
     await actualizar_todos_los_ranking()
+
 # ===============================
 # MODAL
 # ===============================
 class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
-    cantidad = discord.ui.TextInput(label="¿Cuántas shulker colocaste?", required=True)
+    cantidad = discord.ui.TextInput(
+        label="¿Cuántas shulker colocaste?",
+        required=True
+    )
+
     async def on_submit(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         ahora = time.time()
+
         if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
-            await interaction.response.send_message("⏳ Espera antes de registrar.", ephemeral=True)
+            await interaction.response.send_message(
+                "⏳ Espera antes de registrar.",
+                ephemeral=True
+            )
             return
+
         cooldowns[user_id] = ahora
-        cantidad_int = int(self.cantidad.value)
+
+        try:
+            cantidad_int = int(self.cantidad.value)
+            if cantidad_int <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Número inválido.",
+                ephemeral=True
+            )
+            return
+
         hoy = str(date.today())
         username = interaction.user.display_name
+
         cursor.execute(
             "SELECT total FROM shulker WHERE user_id = ? AND fecha = ?",
             (user_id, hoy)
         )
         row = cursor.fetchone()
-        nuevo = cantidad_int if not row else row[0] + cantidad_int
+
+        nuevo_total = cantidad_int if not row else row[0] + cantidad_int
+
         cursor.execute(
-            "REPLACE INTO shulker VALUES (?, ?, ?, ?)",
-            (user_id, username, hoy, nuevo)
+            "REPLACE INTO shulker (user_id, username, fecha, total) VALUES (?, ?, ?, ?)",
+            (user_id, username, hoy, nuevo_total)
         )
         db.commit()
-        actualizar_mensual(user_id, username, cantidad_int)
+
         await actualizar_todos_los_ranking()
-        await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
+
+        end_channel = interaction.client.get_channel(END_CHANNEL_ID)
+        if end_channel:
+            embed = discord.Embed(
+                title="📦 Registro de Shulker",
+                description=(
+                    f"👤 {interaction.user.mention}\n"
+                    f"➕ {cantidad_int}\n"
+                    f"📊 Total hoy: {nuevo_total}"
+                ),
+                color=discord.Color.green()
+            )
+            await end_channel.send(embed=embed)
+
+        await interaction.response.send_message(
+            "✅ Registro guardado.",
+            ephemeral=True
+        )
+
 # ===============================
 # BOTÓN
 # ===============================
 class ShulkerButton(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="Registrar Shulker", style=discord.ButtonStyle.green, emoji="📦")
-    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+    @discord.ui.button(
+        label="Registrar Shulker",
+        style=discord.ButtonStyle.green,
+        emoji="📦"
+    )
+    async def registrar(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
         await interaction.response.send_modal(ShulkerModal())
+
 # ===============================
 # READY
 # ===============================
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
+
     if not ranking_automatico.is_running():
         ranking_automatico.start()
+
     channel = bot.get_channel(FORM_CHANNEL_ID)
     if channel:
         await channel.send(
             embed=discord.Embed(
-                title="🔧 Registro de Shulker",
+                title="🧰 Registro de Shulker",
                 description="Presiona el botón para registrar.",
                 color=discord.Color.green()
             ),
             view=ShulkerButton()
         )
+
 # ===============================
 # RUN
 # ===============================

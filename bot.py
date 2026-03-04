@@ -25,14 +25,14 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
 
 # ===============================
-# RUTA DE LA BASE DE DATOS (PERSISTENTE EN RAILWAY)
+# RUTA DB (PERSISTENTE EN RAILWAY)
 # ===============================
 DATA_DIR = "/data"
 DB_PATH = os.path.join(DATA_DIR, "shulker.db")
-OLD_DB_PATH = "shulker.db"  # el que está en la raíz (si existe)
+OLD_DB_PATH = "shulker.db"  # si existe en la raíz
 
 # ===============================
-# MIGRACIÓN AUTOMÁTICA (solo si existe DB vieja y aún no hay DB en /data)
+# MIGRAR ARCHIVO DB VIEJO A /data (UNA VEZ)
 # ===============================
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -47,32 +47,90 @@ else:
         print("🆕 Creando nueva base de datos en /data/shulker.db")
 
 # ===============================
-# BASE DE DATOS
+# ABRIR DB
 # ===============================
-db = sqlite3.connect(DB_PATH)
-db.execute("PRAGMA journal_mode=WAL;")         # mejor concurrencia
+db = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+db.execute("PRAGMA journal_mode=WAL;")
 db.execute("PRAGMA synchronous=NORMAL;")
 cursor = db.cursor()
 
-# Tabla principal: ahora con PRIMARY KEY (user_id, fecha)
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS shulker (
-    user_id INTEGER,
-    username TEXT,
-    fecha TEXT,
-    total INTEGER,
-    PRIMARY KEY (user_id, fecha)
-)
-""")
+# ===============================
+# MIGRACIÓN DE TABLA (AGREGA PRIMARY KEY SIN PERDER DATOS)
+# ===============================
+def asegurar_tabla_shulker_con_pk():
+    """
+    Si la tabla shulker existe sin PRIMARY KEY (user_id, fecha),
+    la migra sin perder datos para que ON CONFLICT funcione.
+    """
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shulker'")
+    existe = cursor.fetchone() is not None
 
-# Tabla para guardar IDs de mensajes fijos (botón, etc.)
+    if not existe:
+        cursor.execute("""
+        CREATE TABLE shulker (
+            user_id INTEGER,
+            username TEXT,
+            fecha TEXT,
+            total INTEGER,
+            PRIMARY KEY (user_id, fecha)
+        )
+        """)
+        db.commit()
+        print("✅ Tabla shulker creada con PRIMARY KEY (user_id, fecha)")
+        return
+
+    # Revisar si tiene PK
+    cursor.execute("PRAGMA table_info(shulker)")
+    cols = cursor.fetchall()
+    # PRAGMA table_info: (cid, name, type, notnull, dflt_value, pk)
+    pk_cols = [c[1] for c in cols if c[5] > 0]
+
+    # Queremos pk en (user_id, fecha)
+    if set(pk_cols) == {"user_id", "fecha"}:
+        print("✅ Tabla shulker ya tiene PRIMARY KEY (user_id, fecha)")
+        return
+
+    print("⚠️ Tabla shulker sin PRIMARY KEY correcto. Migrando sin perder datos...")
+
+    # 1) renombrar tabla vieja
+    cursor.execute("ALTER TABLE shulker RENAME TO shulker_old")
+
+    # 2) crear tabla nueva con PK
+    cursor.execute("""
+    CREATE TABLE shulker (
+        user_id INTEGER,
+        username TEXT,
+        fecha TEXT,
+        total INTEGER,
+        PRIMARY KEY (user_id, fecha)
+    )
+    """)
+
+    # 3) copiar datos (si hay duplicados, los consolidamos sumando)
+    cursor.execute("""
+    INSERT INTO shulker (user_id, username, fecha, total)
+    SELECT user_id, MAX(username) as username, fecha, SUM(total) as total
+    FROM shulker_old
+    GROUP BY user_id, fecha
+    """)
+
+    # 4) borrar tabla vieja
+    cursor.execute("DROP TABLE shulker_old")
+    db.commit()
+
+    print("✅ Migración completada: shulker ahora tiene PRIMARY KEY y datos consolidados")
+
+asegurar_tabla_shulker_con_pk()
+
+# ===============================
+# TABLA MENSAJES FIJOS
+# ===============================
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS mensajes_fijos (
     tipo TEXT PRIMARY KEY,
     message_id INTEGER
 )
 """)
-
 db.commit()
 
 cooldowns = {}
@@ -81,10 +139,6 @@ cooldowns = {}
 # MENSAJE FIJO (NO SE REPITE)
 # ===============================
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
-    """
-    Devuelve el mensaje fijo asociado a 'tipo'.
-    Si no existe o fue borrado, crea uno nuevo, guarda el ID y lo devuelve.
-    """
     cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
     row = cursor.fetchone()
 
@@ -93,7 +147,6 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
         try:
             return await channel.fetch_message(msg_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            # si fue borrado o no se puede acceder, se recrea
             pass
 
     msg = await channel.send("Cargando...")
@@ -106,7 +159,6 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer):
     descripcion = "_Sin registros aún_" if not datos else ""
-
     for i, (user, total) in enumerate(datos, start=1):
         medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
         descripcion += f"{medalla} **{i}. {user}** — `{total}` shulker\n"
@@ -164,7 +216,6 @@ async def actualizar_todos_los_ranking():
         await crear_embed_ranking("TOP DIARIO", "⚡", discord.Color.gold(), diario, f"📆 Hoy • {hoy}")
     ]
 
-    # Tomamos hasta 6 por si se queda un mensaje “viejo” extra
     mensajes = []
     async for msg in channel.history(limit=6, oldest_first=True):
         if msg.author == bot.user and msg.embeds:
@@ -193,13 +244,11 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         user_id = interaction.user.id
         ahora = time.time()
 
-        # Cooldown anti-spam
         if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
             await interaction.response.send_message("⏳ Espera antes de registrar.", ephemeral=True)
             return
         cooldowns[user_id] = ahora
 
-        # Validación
         try:
             cantidad_int = int(self.cantidad.value)
             if cantidad_int <= 0:
@@ -211,8 +260,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        # ✅ UPSERT ATÓMICO (ANTI-DUPLICADO)
-        # Inserta si no existe (user_id, fecha) o suma si ya existe.
+        # ✅ UPSERT ATÓMICO (YA FUNCIONA PORQUE HAY PK)
         cursor.execute("""
             INSERT INTO shulker (user_id, username, fecha, total)
             VALUES (?, ?, ?, ?)
@@ -223,13 +271,11 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         """, (user_id, username, hoy, cantidad_int))
         db.commit()
 
-        # Leer total actualizado para el embed de log
         cursor.execute("SELECT total FROM shulker WHERE user_id = ? AND fecha = ?", (user_id, hoy))
         nuevo_total = cursor.fetchone()[0]
 
         await actualizar_todos_los_ranking()
 
-        # Log al canal END
         end_channel = interaction.client.get_channel(END_CHANNEL_ID)
         if end_channel:
             embed = discord.Embed(
@@ -270,7 +316,7 @@ async def on_ready():
     if not ranking_automatico.is_running():
         ranking_automatico.start()
 
-    # Mensaje fijo del botón (no se repite al reiniciar)
+    # Mensaje fijo (no se repite)
     channel = bot.get_channel(FORM_CHANNEL_ID)
     if channel:
         msg = await obtener_mensaje_fijo(channel, "form_boton")

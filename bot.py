@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from discord.ext import commands, tasks
 
 # ===============================
-# CREAR EL BOT AL INICIO
+# BOT
 # ===============================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -55,13 +55,38 @@ db.execute("PRAGMA synchronous=NORMAL;")
 cursor = db.cursor()
 
 # ===============================
+# CONFIG DEL BOT (para "empezar desde este mes")
+# ===============================
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS bot_config (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)
+""")
+db.commit()
+
+def get_bot_start_date() -> date:
+    """
+    Fecha desde la cual el bot contará todo (ignorará lo anterior).
+    Se guarda una sola vez al iniciar: primer día del mes actual.
+    """
+    cursor.execute("SELECT value FROM bot_config WHERE key = 'start_date'")
+    row = cursor.fetchone()
+    if row and row[0]:
+        return date.fromisoformat(row[0])
+
+    start = date.today().replace(day=1)
+    cursor.execute("INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)", (str(start),))
+    db.commit()
+    print(f"📌 Start date fijada: {start} (se ignorará todo antes de esa fecha)")
+    return start
+
+BOT_START_DATE = get_bot_start_date()
+
+# ===============================
 # MIGRACIÓN DE TABLA (AGREGA PRIMARY KEY SIN PERDER DATOS)
 # ===============================
 def asegurar_tabla_shulker_con_pk():
-    """
-    Si la tabla shulker existe sin PRIMARY KEY (user_id, fecha),
-    la migra sin perder datos para que ON CONFLICT funcione.
-    """
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shulker'")
     existe = cursor.fetchone() is not None
 
@@ -79,23 +104,18 @@ def asegurar_tabla_shulker_con_pk():
         print("✅ Tabla shulker creada con PRIMARY KEY (user_id, fecha)")
         return
 
-    # Revisar si tiene PK
     cursor.execute("PRAGMA table_info(shulker)")
     cols = cursor.fetchall()
-    # PRAGMA table_info: (cid, name, type, notnull, dflt_value, pk)
     pk_cols = [c[1] for c in cols if c[5] > 0]
 
-    # Queremos pk en (user_id, fecha)
     if set(pk_cols) == {"user_id", "fecha"}:
         print("✅ Tabla shulker ya tiene PRIMARY KEY (user_id, fecha)")
         return
 
     print("⚠️ Tabla shulker sin PRIMARY KEY correcto. Migrando sin perder datos...")
 
-    # 1) renombrar tabla vieja
     cursor.execute("ALTER TABLE shulker RENAME TO shulker_old")
 
-    # 2) crear tabla nueva con PK
     cursor.execute("""
     CREATE TABLE shulker (
         user_id INTEGER,
@@ -106,7 +126,7 @@ def asegurar_tabla_shulker_con_pk():
     )
     """)
 
-    # 3) copiar datos (si hay duplicados, los consolidamos sumando)
+    # Consolidamos por día (por si hubo duplicados)
     cursor.execute("""
     INSERT INTO shulker (user_id, username, fecha, total)
     SELECT user_id, MAX(username) as username, fecha, SUM(total) as total
@@ -114,7 +134,6 @@ def asegurar_tabla_shulker_con_pk():
     GROUP BY user_id, fecha
     """)
 
-    # 4) borrar tabla vieja
     cursor.execute("DROP TABLE shulker_old")
     db.commit()
 
@@ -123,7 +142,7 @@ def asegurar_tabla_shulker_con_pk():
 asegurar_tabla_shulker_con_pk()
 
 # ===============================
-# TABLA MENSAJES FIJOS
+# TABLA MENSAJES FIJOS (botón fijo)
 # ===============================
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS mensajes_fijos (
@@ -134,6 +153,32 @@ CREATE TABLE IF NOT EXISTS mensajes_fijos (
 db.commit()
 
 cooldowns = {}
+
+# ===============================
+# UTILIDADES (K/M + equivalencias)
+# ===============================
+def format_number(num: int) -> str:
+    num = int(num or 0)
+    if num >= 1_000_000:
+        v = num / 1_000_000
+        return f"{v:.1f}M" if v < 10 else f"{v:.0f}M"
+    if num >= 1_000:
+        v = num / 1_000
+        return f"{v:.1f}K" if v < 10 else f"{v:.0f}K"
+    return str(num)
+
+def equivalencias(total_shulkers: int):
+    # Confirmado por ti:
+    # 1 shulker = 27 stacks
+    # 1 stack = 64 bloques end
+    # 1 bloque end = 9 niveles isla
+    # 1 PV = 27 shulkers
+    stacks = total_shulkers * 27
+    bloques = stacks * 64
+    niveles = bloques * 9
+    pv = total_shulkers // 27
+    resto = total_shulkers % 27
+    return stacks, bloques, niveles, pv, resto
 
 # ===============================
 # MENSAJE FIJO (NO SE REPITE)
@@ -155,21 +200,49 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     return msg
 
 # ===============================
-# CREAR EMBED RANKING
+# CREAR EMBED RANKING (MEJORADO)
 # ===============================
-async def crear_embed_ranking(titulo, emoji, color, datos, footer):
-    descripcion = "_Sin registros aún_" if not datos else ""
-    for i, (user, total) in enumerate(datos, start=1):
-        medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-        descripcion += f"{medalla} **{i}. {user}** — `{total}` shulker\n"
+async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo: int):
+    # Ranking (solo top 10 visible, pero el total es real del periodo)
+    descripcion = ""
+    if datos:
+        descripcion += "🏅 **Ranking**\n"
+        for i, (user, total) in enumerate(datos, start=1):
+            medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
+            descripcion += f"{medalla} **{i}. {user}** — `{format_number(total)}` shulker\n"
+    else:
+        descripcion = "_Sin registros aún_"
+
+    stacks, bloques, niveles, pv, resto = equivalencias(total_periodo)
 
     embed = discord.Embed(
         title=f"{emoji} {titulo}",
         description=descripcion,
         color=color
     )
+
+    # Equivalencias como resumen total (no por persona)
+    eq = (
+        f"📦 **Total:** `{format_number(total_periodo)}` shulkers\n"
+        f"📚 **Stacks:** `{format_number(stacks)}`\n"
+        f"🧱 **Bloques End:** `{format_number(bloques)}`\n"
+        f"📈 **Niveles Isla:** `{format_number(niveles)}`\n"
+        f"⚖ **Equivalente:** `{pv}` PV + `{resto}` shulkers"
+    )
+    embed.add_field(name="📊 Equivalencias (total del período)", value=eq, inline=False)
+
     embed.set_footer(text=footer)
     return embed
+
+# ===============================
+# HELPERS: QUERIES CON "EMPEZAR ESTE MES"
+# ===============================
+def clamp_start(d: date) -> date:
+    return d if d >= BOT_START_DATE else BOT_START_DATE
+
+def total_periodo(where_sql: str, params: tuple) -> int:
+    cursor.execute(f"SELECT COALESCE(SUM(total), 0) FROM shulker WHERE {where_sql}", params)
+    return int(cursor.fetchone()[0] or 0)
 
 # ===============================
 # ACTUALIZAR RANKINGS (EDITA, NO SPAM)
@@ -180,40 +253,73 @@ async def actualizar_todos_los_ranking():
         return
 
     hoy = date.today()
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
-    inicio_mes = hoy.replace(day=1)
 
+    # Desde este mes en adelante (ignora todo antes)
+    inicio_mes = clamp_start(hoy.replace(day=1))
+
+    # Semana (pero nunca antes del start_date)
+    inicio_semana = hoy - timedelta(days=hoy.weekday())
+    inicio_semana = clamp_start(inicio_semana)
+
+    # -------------------------------
+    # Ranking mensual (top 10 visible)
+    # -------------------------------
     cursor.execute("""
-        SELECT username, SUM(total)
+        SELECT username, SUM(total) as s
         FROM shulker
         WHERE fecha >= ?
         GROUP BY user_id
-        ORDER BY SUM(total) DESC
+        ORDER BY s DESC
+        LIMIT 10
     """, (str(inicio_mes),))
     mensual = cursor.fetchall()
 
+    total_mensual = total_periodo("fecha >= ?", (str(inicio_mes),))
+
+    # -------------------------------
+    # Ranking semanal (top 10 visible)
+    # -------------------------------
     cursor.execute("""
-        SELECT username, SUM(total)
+        SELECT username, SUM(total) as s
         FROM shulker
         WHERE fecha >= ?
         GROUP BY user_id
-        ORDER BY SUM(total) DESC
+        ORDER BY s DESC
+        LIMIT 10
     """, (str(inicio_semana),))
     semanal = cursor.fetchall()
 
+    total_semanal = total_periodo("fecha >= ?", (str(inicio_semana),))
+
+    # -------------------------------
+    # Ranking diario (top 10 visible)
+    # -------------------------------
+    # (si hoy es antes del start_date, se verá vacío)
     cursor.execute("""
-        SELECT username, SUM(total)
+        SELECT username, SUM(total) as s
         FROM shulker
-        WHERE fecha = ?
+        WHERE fecha = ? AND fecha >= ?
         GROUP BY user_id
-        ORDER BY SUM(total) DESC
-    """, (str(hoy),))
+        ORDER BY s DESC
+        LIMIT 10
+    """, (str(hoy), str(BOT_START_DATE)))
     diario = cursor.fetchall()
 
+    total_diario = total_periodo("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
+
     embeds = [
-        await crear_embed_ranking("TOP MENSUAL", "👑", discord.Color.purple(), mensual, "🗓️ Mes actual"),
-        await crear_embed_ranking("TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"📅 Desde {inicio_semana}"),
-        await crear_embed_ranking("TOP DIARIO", "⚡", discord.Color.gold(), diario, f"📆 Hoy • {hoy}")
+        await crear_embed_ranking(
+            "TOP MENSUAL", "👑", discord.Color.purple(),
+            mensual, "🗓️ Mes actual (desde el inicio del bot)", total_mensual
+        ),
+        await crear_embed_ranking(
+            "TOP SEMANAL", "📈", discord.Color.blue(),
+            semanal, f"📅 Semana actual • Desde {inicio_semana}", total_semanal
+        ),
+        await crear_embed_ranking(
+            "TOP DIARIO", "⚡", discord.Color.gold(),
+            diario, f"📆 Hoy • {hoy}", total_diario
+        )
     ]
 
     mensajes = []
@@ -260,7 +366,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        # ✅ UPSERT ATÓMICO (YA FUNCIONA PORQUE HAY PK)
+        # ✅ UPSERT ATÓMICO
         cursor.execute("""
             INSERT INTO shulker (user_id, username, fecha, total)
             VALUES (?, ?, ?, ?)
@@ -309,6 +415,8 @@ class ShulkerButton(discord.ui.View):
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
     print(f"📂 Base de datos activa: {DB_PATH}")
+    print(f"📌 Start date: {BOT_START_DATE} (se ignora todo antes)")
+
     if os.path.exists(DB_PATH):
         size_kb = os.path.getsize(DB_PATH) / 1024
         print(f"   Tamaño actual: {size_kb:.2f} KB")
@@ -316,7 +424,7 @@ async def on_ready():
     if not ranking_automatico.is_running():
         ranking_automatico.start()
 
-    # Mensaje fijo (no se repite)
+    # Mensaje fijo del botón (no se repite)
     channel = bot.get_channel(FORM_CHANNEL_ID)
     if channel:
         msg = await obtener_mensaje_fijo(channel, "form_boton")
@@ -329,6 +437,9 @@ async def on_ready():
             ),
             view=ShulkerButton()
         )
+
+    # Actualiza rankings al iniciar
+    await actualizar_todos_los_ranking()
 
 # ===============================
 # INICIAR BOT

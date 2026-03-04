@@ -29,7 +29,7 @@ COOLDOWN_SECONDS = 60
 # ===============================
 DATA_DIR = "/data"
 DB_PATH = os.path.join(DATA_DIR, "shulker.db")
-OLD_DB_PATH = "shulker.db"  # si existe en la raíz
+OLD_DB_PATH = "shulker.db"
 
 # ===============================
 # MIGRAR ARCHIVO DB VIEJO A /data (UNA VEZ)
@@ -66,17 +66,16 @@ CREATE TABLE IF NOT EXISTS bot_config (
 db.commit()
 
 def get_bot_start_date() -> date:
-    """
-    Fecha desde la cual el bot contará todo (ignorará lo anterior).
-    Se guarda una sola vez al iniciar: primer día del mes actual.
-    """
     cursor.execute("SELECT value FROM bot_config WHERE key = 'start_date'")
     row = cursor.fetchone()
     if row and row[0]:
         return date.fromisoformat(row[0])
 
     start = date.today().replace(day=1)
-    cursor.execute("INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)", (str(start),))
+    cursor.execute(
+        "INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)",
+        (str(start),)
+    )
     db.commit()
     print(f"📌 Start date fijada: {start} (se ignorará todo antes de esa fecha)")
     return start
@@ -126,7 +125,6 @@ def asegurar_tabla_shulker_con_pk():
     )
     """)
 
-    # Consolidamos por día (por si hubo duplicados)
     cursor.execute("""
     INSERT INTO shulker (user_id, username, fecha, total)
     SELECT user_id, MAX(username) as username, fecha, SUM(total) as total
@@ -136,7 +134,6 @@ def asegurar_tabla_shulker_con_pk():
 
     cursor.execute("DROP TABLE shulker_old")
     db.commit()
-
     print("✅ Migración completada: shulker ahora tiene PRIMARY KEY y datos consolidados")
 
 asegurar_tabla_shulker_con_pk()
@@ -168,17 +165,19 @@ def format_number(num: int) -> str:
     return str(num)
 
 def equivalencias(total_shulkers: int):
-    # Confirmado por ti:
-    # 1 shulker = 27 stacks
-    # 1 stack = 64 bloques end
-    # 1 bloque end = 9 niveles isla
-    # 1 PV = 27 shulkers
     stacks = total_shulkers * 27
     bloques = stacks * 64
     niveles = bloques * 9
     pv = total_shulkers // 27
     resto = total_shulkers % 27
     return stacks, bloques, niveles, pv, resto
+
+def clamp_start(d: date) -> date:
+    return d if d >= BOT_START_DATE else BOT_START_DATE
+
+def total_periodo(where_sql: str, params: tuple) -> int:
+    cursor.execute(f"SELECT COALESCE(SUM(total), 0) FROM shulker WHERE {where_sql}", params)
+    return int(cursor.fetchone()[0] or 0)
 
 # ===============================
 # MENSAJE FIJO (NO SE REPITE)
@@ -200,49 +199,49 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     return msg
 
 # ===============================
-# CREAR EMBED RANKING (MEJORADO)
+# CREAR EMBED RANKING (MINIMAL)
 # ===============================
-async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo: int):
-    # Ranking (solo top 10 visible, pero el total es real del periodo)
-    descripcion = ""
-    if datos:
-        descripcion += "🏅 **Ranking**\n"
-        for i, (user, total) in enumerate(datos, start=1):
-            medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-            descripcion += f"{medalla} **{i}. {user}** — `{format_number(total)}` shulker\n"
+async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo_shulkers: int):
+    # Ranking limpio
+    if not datos:
+        ranking_text = "_Sin registros aún_"
     else:
-        descripcion = "_Sin registros aún_"
+        lines = []
+        for i, (user, total) in enumerate(datos, start=1):
+            if i == 1:
+                medalla = "🥇"
+            elif i == 2:
+                medalla = "🥈"
+            elif i == 3:
+                medalla = "🥉"
+            else:
+                medalla = "▫️"
+            lines.append(f"{medalla} **{user}** — `{format_number(total)}`")
+        ranking_text = "\n".join(lines)
 
-    stacks, bloques, niveles, pv, resto = equivalencias(total_periodo)
+    stacks, bloques, niveles, pv, resto = equivalencias(total_periodo_shulkers)
+
+    # Resumen en 1 línea
+    resumen = (
+        f"`{format_number(total_periodo_shulkers)}` shulkers • "
+        f"`{format_number(stacks)}` stacks • "
+        f"`{format_number(bloques)}` bloques • "
+        f"`{format_number(niveles)}` niveles • "
+        f"`{pv}` PV"
+    )
 
     embed = discord.Embed(
         title=f"{emoji} {titulo}",
-        description=descripcion,
+        description=ranking_text,
         color=color
     )
 
-    # Equivalencias como resumen total (no por persona)
-    eq = (
-        f"📦 **Total:** `{format_number(total_periodo)}` shulkers\n"
-        f"📚 **Stacks:** `{format_number(stacks)}`\n"
-        f"🧱 **Bloques End:** `{format_number(bloques)}`\n"
-        f"📈 **Niveles Isla:** `{format_number(niveles)}`\n"
-        f"⚖ **Equivalente:** `{pv}` PV + `{resto}` shulkers"
-    )
-    embed.add_field(name="📊 Equivalencias (total del período)", value=eq, inline=False)
+    embed.add_field(name="📊 Resumen", value=resumen, inline=False)
+    embed.add_field(name="📦 Total", value=f"`{format_number(total_periodo_shulkers)}` shulkers", inline=True)
+    embed.add_field(name="⚖ Equivalente", value=f"`{pv}` PV + `{resto}` shulkers", inline=True)
 
     embed.set_footer(text=footer)
     return embed
-
-# ===============================
-# HELPERS: QUERIES CON "EMPEZAR ESTE MES"
-# ===============================
-def clamp_start(d: date) -> date:
-    return d if d >= BOT_START_DATE else BOT_START_DATE
-
-def total_periodo(where_sql: str, params: tuple) -> int:
-    cursor.execute(f"SELECT COALESCE(SUM(total), 0) FROM shulker WHERE {where_sql}", params)
-    return int(cursor.fetchone()[0] or 0)
 
 # ===============================
 # ACTUALIZAR RANKINGS (EDITA, NO SPAM)
@@ -253,68 +252,51 @@ async def actualizar_todos_los_ranking():
         return
 
     hoy = date.today()
-
-    # Desde este mes en adelante (ignora todo antes)
     inicio_mes = clamp_start(hoy.replace(day=1))
+    inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
 
-    # Semana (pero nunca antes del start_date)
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
-    inicio_semana = clamp_start(inicio_semana)
-
-    # -------------------------------
-    # Ranking mensual (top 10 visible)
-    # -------------------------------
+    # TOP 5 (minimal)
     cursor.execute("""
         SELECT username, SUM(total) as s
         FROM shulker
         WHERE fecha >= ?
         GROUP BY user_id
         ORDER BY s DESC
-        LIMIT 10
+        LIMIT 5
     """, (str(inicio_mes),))
     mensual = cursor.fetchall()
-
     total_mensual = total_periodo("fecha >= ?", (str(inicio_mes),))
 
-    # -------------------------------
-    # Ranking semanal (top 10 visible)
-    # -------------------------------
     cursor.execute("""
         SELECT username, SUM(total) as s
         FROM shulker
         WHERE fecha >= ?
         GROUP BY user_id
         ORDER BY s DESC
-        LIMIT 10
+        LIMIT 5
     """, (str(inicio_semana),))
     semanal = cursor.fetchall()
-
     total_semanal = total_periodo("fecha >= ?", (str(inicio_semana),))
 
-    # -------------------------------
-    # Ranking diario (top 10 visible)
-    # -------------------------------
-    # (si hoy es antes del start_date, se verá vacío)
     cursor.execute("""
         SELECT username, SUM(total) as s
         FROM shulker
         WHERE fecha = ? AND fecha >= ?
         GROUP BY user_id
         ORDER BY s DESC
-        LIMIT 10
+        LIMIT 5
     """, (str(hoy), str(BOT_START_DATE)))
     diario = cursor.fetchall()
-
     total_diario = total_periodo("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
 
     embeds = [
         await crear_embed_ranking(
             "TOP MENSUAL", "👑", discord.Color.purple(),
-            mensual, "🗓️ Mes actual (desde el inicio del bot)", total_mensual
+            mensual, "🗓️ Mes actual • desde el inicio del bot", total_mensual
         ),
         await crear_embed_ranking(
             "TOP SEMANAL", "📈", discord.Color.blue(),
-            semanal, f"📅 Semana actual • Desde {inicio_semana}", total_semanal
+            semanal, f"📅 Semana actual • desde {inicio_semana}", total_semanal
         ),
         await crear_embed_ranking(
             "TOP DIARIO", "⚡", discord.Color.gold(),
@@ -366,7 +348,6 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        # ✅ UPSERT ATÓMICO
         cursor.execute("""
             INSERT INTO shulker (user_id, username, fecha, total)
             VALUES (?, ?, ?, ?)
@@ -438,7 +419,6 @@ async def on_ready():
             view=ShulkerButton()
         )
 
-    # Actualiza rankings al iniciar
     await actualizar_todos_los_ranking()
 
 # ===============================

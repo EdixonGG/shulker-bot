@@ -29,7 +29,7 @@ COOLDOWN_SECONDS = 60
 
 # Metas (ajústalas cuando quieras)
 TARGET_TOP1_LEVEL = 105_000_000  # ✅ tu competencia TOP 1
-TARGET_TOP3_LEVEL = 45_000_000   # opcional, ajusta si quieres
+TARGET_TOP3_LEVEL = 80_000_000   # opcional, ajusta si quieres
 DAILY_SHULKER_GOAL = 120
 
 # ===============================
@@ -552,3 +552,4 @@ async def on_ready():
 # RUN
 # ===============================
 bot.run(TOKEN)
+

@@ -453,35 +453,38 @@ async def on_ready():
 
     channel = bot.get_channel(FORM_CHANNEL_ID)
 
-    if channel:
+    if not channel:
+        return
 
-        cursor.execute(
-            "SELECT message_id FROM mensajes_fijos WHERE tipo='form'"
+    cursor.execute(
+        "SELECT message_id FROM mensajes_fijos WHERE tipo='form_boton'"
+    )
+
+    row = cursor.fetchone()
+
+    mensaje = None
+
+    if row:
+
+        try:
+            mensaje = await channel.fetch_message(row[0])
+        except:
+            mensaje = None
+
+    if mensaje:
+
+        await mensaje.edit(
+            embed=discord.Embed(
+                title="📦 Registro de Shulker",
+                description="Presiona el botón para registrar.",
+                color=discord.Color.green()
+            ),
+            view=ShulkerButton()
         )
 
-        row = cursor.fetchone()
+    else:
 
-        if row:
-
-            try:
-
-                msg = await channel.fetch_message(row[0])
-
-                await msg.edit(
-                    embed=discord.Embed(
-                        title="📦 Registro de Shulker",
-                        description="Presiona el botón para registrar.",
-                        color=discord.Color.green()
-                    ),
-                    view=ShulkerButton()
-                )
-
-                return
-
-            except:
-                pass
-
-        msg = await channel.send(
+        mensaje = await channel.send(
             embed=discord.Embed(
                 title="📦 Registro de Shulker",
                 description="Presiona el botón para registrar.",
@@ -491,8 +494,8 @@ async def on_ready():
         )
 
         cursor.execute(
-            "INSERT OR REPLACE INTO mensajes_fijos VALUES('form',?)",
-            (msg.id,)
+            "INSERT OR REPLACE INTO mensajes_fijos VALUES('form_boton',?)",
+            (mensaje.id,)
         )
 
         db.commit()
@@ -501,3 +504,4 @@ async def on_ready():
 # RUN BOT
 # ===============================
 bot.run(TOKEN)
+

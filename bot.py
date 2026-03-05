@@ -28,14 +28,20 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
 
 # Metas (ajústalas cuando quieras)
-TARGET_TOP1_LEVEL = 60_000_000
-TARGET_TOP3_LEVEL = 45_000_000
+TARGET_TOP1_LEVEL = 105_000_000  # ✅ tu competencia TOP 1
+TARGET_TOP3_LEVEL = 45_000_000   # opcional, ajusta si quieres
 DAILY_SHULKER_GOAL = 120
 
-# Conversión (según tu fórmula actual)
-LEVELS_PER_SHULKER = 15552
+# ===============================
+# CONVERSIÓN EXACTA SEGÚN TU SERVER
+# ===============================
+LEVELS_PER_BLOCK = 9                       # 1 bloque = 9 niveles
+LEVELS_PER_STACK = 64 * LEVELS_PER_BLOCK   # 576 niveles
+LEVELS_PER_SHULKER = 27 * LEVELS_PER_STACK # 15552 niveles ✅
+SHULKERS_PER_PV = 27
+LEVELS_PER_PV = SHULKERS_PER_PV * LEVELS_PER_SHULKER  # 419,904 ✅
 
-# Nivel exacto que nos diste (se usará SOLO si todavía no hay base guardada)
+# Nivel exacto base (se usará solo si no hay base guardada aún)
 DEFAULT_BASE_LEVEL = 42127075
 
 # ===============================
@@ -47,7 +53,7 @@ OLD_DB_PATH = "shulker.db"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Migración de shulker.db viejo → /data (una vez)
+# Migración vieja → /data (una vez)
 if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
     print("⚡ Migrando shulker.db viejo → /data/shulker.db")
     shutil.copy2(OLD_DB_PATH, DB_PATH)
@@ -88,18 +94,14 @@ db.commit()
 # START DATE (empezar desde este mes)
 # ===============================
 def get_bot_start_date() -> date:
-    cursor.execute("SELECT value FROM bot_config WHERE key = 'start_date'")
+    cursor.execute("SELECT value FROM bot_config WHERE key='start_date'")
     row = cursor.fetchone()
     if row and row[0]:
         return date.fromisoformat(row[0])
 
     start = date.today().replace(day=1)
-    cursor.execute(
-        "INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)",
-        (str(start),)
-    )
+    cursor.execute("INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)", (str(start),))
     db.commit()
-    print(f"📌 Start date fijada: {start}")
     return start
 
 BOT_START_DATE = get_bot_start_date()
@@ -190,12 +192,17 @@ def barra_progreso(valor: int, maximo: int, largo: int = 10) -> str:
     return "█" * llenos + "░" * (largo - llenos)
 
 def equivalencias(shulkers: int):
+    # ✅ exacto según tus reglas
     stacks = shulkers * 27
-    bloques = stacks * 64
-    niveles = bloques * 9
-    pv = shulkers // 27
-    resto = shulkers % 27
-    return stacks, bloques, niveles, pv, resto
+    niveles = shulkers * LEVELS_PER_SHULKER
+    pv = shulkers // SHULKERS_PER_PV
+    resto = shulkers % SHULKERS_PER_PV
+    return stacks, niveles, pv, resto
+
+def shulkers_a_pv_y_shulkers(shulkers: int):
+    pv = shulkers // SHULKERS_PER_PV
+    resto = shulkers % SHULKERS_PER_PV
+    return pv, resto
 
 def get_progress_value(key: str, default: str = "") -> str:
     cursor.execute("SELECT value FROM island_progress WHERE key = ?", (key,))
@@ -245,7 +252,6 @@ def asegurar_base_progreso_si_falta():
     if base_level:
         return
 
-    # Si no existe base, la fijamos con tu nivel exacto actual
     set_progress_value("base_level", str(DEFAULT_BASE_LEVEL))
     set_progress_value("base_shulkers", str(total_shulkers_all_time()))
     set_progress_value("base_date", str(date.today()))
@@ -270,11 +276,17 @@ async def actualizar_panel_progreso():
     niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
     nivel_estimado = base_level + niveles_ganados
 
+    # faltantes en niveles
     faltan_top1 = max(0, TARGET_TOP1_LEVEL - nivel_estimado)
     faltan_top3 = max(0, TARGET_TOP3_LEVEL - nivel_estimado)
 
+    # Convertir faltantes a shulkers (ceil)
     shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
     shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
+
+    # Mostrar como PVS + SHULKERS
+    pv1, sh1 = shulkers_a_pv_y_shulkers(shulkers_top1)
+    pv3, sh3 = shulkers_a_pv_y_shulkers(shulkers_top3)
 
     faltan_diario = max(0, DAILY_SHULKER_GOAL - hoy_sh)
 
@@ -295,7 +307,7 @@ async def actualizar_panel_progreso():
         value=(
             f"`{nivel_estimado:,}` / `{TARGET_TOP1_LEVEL:,}`\n"
             f"`{bar_top1}`\n"
-            f"FALTAN: `{faltan_top1:,}` niveles ≈ `{shulkers_top1:,}` SHULKERS"
+            f"FALTAN: `{faltan_top1:,}` niveles ≈ `{pv1}` PVS + `{sh1}` SHULKERS"
         ),
         inline=False
     )
@@ -305,16 +317,17 @@ async def actualizar_panel_progreso():
         value=(
             f"`{nivel_estimado:,}` / `{TARGET_TOP3_LEVEL:,}`\n"
             f"`{bar_top3}`\n"
-            f"FALTAN: `{faltan_top3:,}` niveles ≈ `{shulkers_top3:,}` SHULKERS"
+            f"FALTAN: `{faltan_top3:,}` niveles ≈ `{pv3}` PVS + `{sh3}` SHULKERS"
         ),
         inline=False
     )
 
     embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'}")
+
     msg = await obtener_mensaje_fijo(channel, "panel_progreso")
     await msg.edit(content=None, embed=embed)
 
-# Comando para recalibrar cuando tú quieras (admin)
+# Recalibrar cuando tú quieras (admin)
 @bot.command(name="setnivel")
 @commands.has_permissions(administrator=True)
 async def setnivel(ctx, nivel: int):
@@ -341,7 +354,7 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
             lines.append(f"{medalla} **{user}** — `{format_number(total)}` `{bar}`")
         ranking_text = "\n".join(lines)
 
-    _, _, niveles, pv, resto = equivalencias(total_periodo_shulkers)
+    _, niveles, pv, resto = equivalencias(total_periodo_shulkers)
 
     resumen = (
         f"`{format_number(total_periodo_shulkers)}` SHULKERS • "
@@ -376,7 +389,6 @@ async def actualizar_todos_los_ranking():
     inicio_mes = clamp_start(hoy.replace(day=1))
     inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
 
-    # TOP MENSUAL (TOP 5)
     cursor.execute("""
         SELECT username, SUM(total) as s
         FROM shulker
@@ -388,7 +400,6 @@ async def actualizar_todos_los_ranking():
     mensual = cursor.fetchall()
     total_mensual = await total_periodo("fecha >= ?", (str(inicio_mes),))
 
-    # TOP SEMANAL (TOP 5)
     cursor.execute("""
         SELECT username, SUM(total) as s
         FROM shulker
@@ -400,7 +411,6 @@ async def actualizar_todos_los_ranking():
     semanal = cursor.fetchall()
     total_semanal = await total_periodo("fecha >= ?", (str(inicio_semana),))
 
-    # TOP DIARIO (TOP 5)
     cursor.execute("""
         SELECT username, SUM(total) as s
         FROM shulker
@@ -464,7 +474,6 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        # UPSERT atómico (anti duplicado)
         cursor.execute("""
             INSERT INTO shulker (user_id, username, fecha, total)
             VALUES (?, ?, ?, ?)
@@ -515,6 +524,7 @@ async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
     print(f"📂 DB: {DB_PATH}")
     print(f"📌 Start date: {BOT_START_DATE}")
+    print(f"✅ LEVELS_PER_SHULKER: {LEVELS_PER_SHULKER} | LEVELS_PER_PV: {LEVELS_PER_PV}")
 
     asegurar_base_progreso_si_falta()
 

@@ -27,21 +27,20 @@ PROGRESS_CHANNEL_ID = 1478948711995412702
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
 
-# Metas (ajústalas cuando quieras)
-TARGET_TOP1_LEVEL = 105_000_000  # ✅ tu competencia TOP 1
-TARGET_TOP3_LEVEL = 80_000_000   # opcional, ajusta si quieres
+# Metas
+TARGET_TOP1_LEVEL = 105_000_000
+TARGET_TOP3_LEVEL = 80_000_000
 DAILY_SHULKER_GOAL = 120
 
 # ===============================
 # CONVERSIÓN EXACTA SEGÚN TU SERVER
 # ===============================
-LEVELS_PER_BLOCK = 9                       # 1 bloque = 9 niveles
-LEVELS_PER_STACK = 64 * LEVELS_PER_BLOCK   # 576 niveles
-LEVELS_PER_SHULKER = 27 * LEVELS_PER_STACK # 15552 niveles ✅
+LEVELS_PER_BLOCK = 9
+LEVELS_PER_STACK = 64 * LEVELS_PER_BLOCK         # 576
+LEVELS_PER_SHULKER = 27 * LEVELS_PER_STACK       # 15552
 SHULKERS_PER_PV = 27
-LEVELS_PER_PV = SHULKERS_PER_PV * LEVELS_PER_SHULKER  # 419,904 ✅
+LEVELS_PER_PV = SHULKERS_PER_PV * LEVELS_PER_SHULKER  # 419904
 
-# Nivel exacto base (se usará solo si no hay base guardada aún)
 DEFAULT_BASE_LEVEL = 42127075
 
 # ===============================
@@ -53,7 +52,6 @@ OLD_DB_PATH = "shulker.db"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Migración vieja → /data (una vez)
 if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
     print("⚡ Migrando shulker.db viejo → /data/shulker.db")
     shutil.copy2(OLD_DB_PATH, DB_PATH)
@@ -91,7 +89,7 @@ CREATE TABLE IF NOT EXISTS island_progress (
 db.commit()
 
 # ===============================
-# START DATE (empezar desde este mes)
+# START DATE
 # ===============================
 def get_bot_start_date() -> date:
     cursor.execute("SELECT value FROM bot_config WHERE key='start_date'")
@@ -100,7 +98,10 @@ def get_bot_start_date() -> date:
         return date.fromisoformat(row[0])
 
     start = date.today().replace(day=1)
-    cursor.execute("INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)", (str(start),))
+    cursor.execute(
+        "INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)",
+        (str(start),)
+    )
     db.commit()
     return start
 
@@ -110,7 +111,7 @@ def clamp_start(d: date) -> date:
     return d if d >= BOT_START_DATE else BOT_START_DATE
 
 # ===============================
-# MIGRACIÓN: asegurar PRIMARY KEY (user_id, fecha)
+# MIGRACIÓN TABLA SHULKER
 # ===============================
 def asegurar_tabla_shulker_con_pk():
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shulker'")
@@ -191,8 +192,14 @@ def barra_progreso(valor: int, maximo: int, largo: int = 10) -> str:
     llenos = max(0, min(largo, llenos))
     return "█" * llenos + "░" * (largo - llenos)
 
+def barra_meta(valor: int, meta: int, largo: int = 16) -> str:
+    if meta <= 0:
+        return "░" * largo
+    ratio = max(0.0, min(1.0, valor / meta))
+    llenos = int(round(ratio * largo))
+    return "█" * llenos + "░" * (largo - llenos)
+
 def equivalencias(shulkers: int):
-    # ✅ exacto según tus reglas
     stacks = shulkers * 27
     niveles = shulkers * LEVELS_PER_SHULKER
     pv = shulkers // SHULKERS_PER_PV
@@ -210,7 +217,10 @@ def get_progress_value(key: str, default: str = "") -> str:
     return row[0] if row and row[0] is not None else default
 
 def set_progress_value(key: str, value: str):
-    cursor.execute("INSERT OR REPLACE INTO island_progress (key, value) VALUES (?, ?)", (key, value))
+    cursor.execute(
+        "INSERT OR REPLACE INTO island_progress (key, value) VALUES (?, ?)",
+        (key, value)
+    )
     db.commit()
 
 def total_shulkers_all_time() -> int:
@@ -221,13 +231,6 @@ def total_shulkers_today() -> int:
     hoy = str(date.today())
     cursor.execute("SELECT COALESCE(SUM(total), 0) FROM shulker WHERE fecha = ?", (hoy,))
     return int(cursor.fetchone()[0] or 0)
-
-def barra_meta(valor: int, meta: int, largo: int = 16) -> str:
-    if meta <= 0:
-        return "░" * largo
-    ratio = max(0.0, min(1.0, valor / meta))
-    llenos = int(round(ratio * largo))
-    return "█" * llenos + "░" * (largo - llenos)
 
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
@@ -240,7 +243,10 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
             pass
 
     msg = await channel.send("Cargando...")
-    cursor.execute("INSERT OR REPLACE INTO mensajes_fijos (tipo, message_id) VALUES (?, ?)", (tipo, msg.id))
+    cursor.execute(
+        "INSERT OR REPLACE INTO mensajes_fijos (tipo, message_id) VALUES (?, ?)",
+        (tipo, msg.id)
+    )
     db.commit()
     return msg
 
@@ -276,15 +282,12 @@ async def actualizar_panel_progreso():
     niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
     nivel_estimado = base_level + niveles_ganados
 
-    # faltantes en niveles
     faltan_top1 = max(0, TARGET_TOP1_LEVEL - nivel_estimado)
     faltan_top3 = max(0, TARGET_TOP3_LEVEL - nivel_estimado)
 
-    # Convertir faltantes a shulkers (ceil)
     shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
     shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
 
-    # Mostrar como PVS + SHULKERS
     pv1, sh1 = shulkers_a_pv_y_shulkers(shulkers_top1)
     pv3, sh3 = shulkers_a_pv_y_shulkers(shulkers_top3)
 
@@ -297,7 +300,7 @@ async def actualizar_panel_progreso():
         title="🏝️ PROGRESO DE LA ISLA (PRIVADO)",
         description=(
             f"**NIVEL ACTUAL (estimado):** `{nivel_estimado:,}`\n"
-            f"**SHULKERS HOY:** `{hoy_sh:,}` / `{DAILY_SHULKER_GOAL:,}`  (FALTAN `{faltan_diario:,}`)\n"
+            f"**SHULKERS HOY:** `{hoy_sh:,}` / `{DAILY_SHULKER_GOAL:,}` (FALTAN `{faltan_diario:,}`)\n"
         ),
         color=discord.Color.dark_teal()
     )
@@ -327,18 +330,48 @@ async def actualizar_panel_progreso():
     msg = await obtener_mensaje_fijo(channel, "panel_progreso")
     await msg.edit(content=None, embed=embed)
 
-# Recalibrar cuando tú quieras (admin)
+# ===============================
+# COMANDOS ADMIN / UTILIDAD
+# ===============================
 @bot.command(name="setnivel")
 @commands.has_permissions(administrator=True)
 async def setnivel(ctx, nivel: int):
     set_progress_value("base_level", str(nivel))
     set_progress_value("base_shulkers", str(total_shulkers_all_time()))
     set_progress_value("base_date", str(date.today()))
-    await ctx.reply(f"✅ Nivel base fijado en `{nivel:,}` (recalibrado).", mention_author=False)
+    await ctx.reply(
+        f"✅ Nivel base fijado en `{nivel:,}` y progreso recalibrado.",
+        mention_author=False
+    )
     await actualizar_panel_progreso()
 
+@bot.command(name="estadoisla")
+@commands.has_permissions(administrator=True)
+async def estadoisla(ctx):
+    base_level = int(get_progress_value("base_level", "0") or 0)
+    base_shulkers = int(get_progress_value("base_shulkers", "0") or 0)
+    base_date = get_progress_value("base_date", "sin fecha")
+
+    total_sh = total_shulkers_all_time()
+    nuevos_sh = max(0, total_sh - base_shulkers)
+    niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
+    nivel_estimado = base_level + niveles_ganados
+
+    embed = discord.Embed(
+        title="📊 Estado actual de la isla",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(name="Base nivel", value=f"`{base_level:,}`", inline=False)
+    embed.add_field(name="Base shulkers", value=f"`{base_shulkers:,}`", inline=True)
+    embed.add_field(name="Shulkers totales", value=f"`{total_sh:,}`", inline=True)
+    embed.add_field(name="Shulkers desde base", value=f"`{nuevos_sh:,}`", inline=True)
+    embed.add_field(name="Niveles ganados", value=f"`{niveles_ganados:,}`", inline=True)
+    embed.add_field(name="Nivel estimado", value=f"`{nivel_estimado:,}`", inline=True)
+    embed.set_footer(text=f"Base tomada desde: {base_date}")
+    await ctx.reply(embed=embed, mention_author=False)
+
 # ===============================
-# EMBED RANKING (TOP 5 + barra)
+# EMBEDS RANKING
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo_shulkers: int):
     if not datos:
@@ -422,22 +455,23 @@ async def actualizar_todos_los_ranking():
     diario = cursor.fetchall()
     total_diario = await total_periodo("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
 
-    embeds = [
-        await crear_embed_ranking("TOP MENSUAL", "👑", discord.Color.purple(), mensual, "Mes actual", total_mensual),
-        await crear_embed_ranking("TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal),
-        await crear_embed_ranking("TOP DIARIO", "⚡", discord.Color.gold(), diario, f"Hoy • {hoy}", total_diario),
-    ]
+    embed_mensual = await crear_embed_ranking(
+        "TOP MENSUAL", "👑", discord.Color.purple(), mensual, "Mes actual", total_mensual
+    )
+    embed_semanal = await crear_embed_ranking(
+        "TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal
+    )
+    embed_diario = await crear_embed_ranking(
+        "TOP DIARIO", "⚡", discord.Color.gold(), diario, f"Hoy • {hoy}", total_diario
+    )
 
-    mensajes = []
-    async for msg in channel.history(limit=6, oldest_first=True):
-        if msg.author == bot.user and msg.embeds:
-            mensajes.append(msg)
+    msg_mensual = await obtener_mensaje_fijo(channel, "ranking_mensual")
+    msg_semanal = await obtener_mensaje_fijo(channel, "ranking_semanal")
+    msg_diario = await obtener_mensaje_fijo(channel, "ranking_diario")
 
-    for i, embed in enumerate(embeds):
-        if i < len(mensajes):
-            await mensajes[i].edit(embed=embed)
-        else:
-            await channel.send(embed=embed)
+    await msg_mensual.edit(content=None, embed=embed_mensual)
+    await msg_semanal.edit(content=None, embed=embed_semanal)
+    await msg_diario.edit(content=None, embed=embed_diario)
 
 # ===============================
 # TASKS
@@ -458,10 +492,12 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         ahora = time.time()
 
         if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
-            await interaction.response.send_message("⏳ Espera antes de registrar.", ephemeral=True)
+            restante = int(COOLDOWN_SECONDS - (ahora - cooldowns[user_id]))
+            await interaction.response.send_message(
+                f"⏳ Espera `{restante}` segundos antes de registrar otra vez.",
+                ephemeral=True
+            )
             return
-
-        cooldowns[user_id] = ahora
 
         try:
             cantidad_int = int(self.cantidad.value)
@@ -474,36 +510,53 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         hoy = str(date.today())
         username = interaction.user.display_name
 
-        cursor.execute("""
-            INSERT INTO shulker (user_id, username, fecha, total)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, fecha)
-            DO UPDATE SET
-                total = total + excluded.total,
-                username = excluded.username
-        """, (user_id, username, hoy, cantidad_int))
-        db.commit()
+        try:
+            cursor.execute("""
+                INSERT INTO shulker (user_id, username, fecha, total)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, fecha)
+                DO UPDATE SET
+                    total = total + excluded.total,
+                    username = excluded.username
+            """, (user_id, username, hoy, cantidad_int))
+            db.commit()
 
-        cursor.execute("SELECT total FROM shulker WHERE user_id = ? AND fecha = ?", (user_id, hoy))
-        nuevo_total = int(cursor.fetchone()[0] or 0)
+            cooldowns[user_id] = ahora
 
-        await actualizar_todos_los_ranking()
-        await actualizar_panel_progreso()
-
-        end_channel = interaction.client.get_channel(END_CHANNEL_ID)
-        if end_channel:
-            embed = discord.Embed(
-                title="📦 Registro de Shulker",
-                description=(
-                    f"👤 {interaction.user.mention}\n"
-                    f"➕ `{cantidad_int}`\n"
-                    f"📊 Total hoy: `{nuevo_total}`"
-                ),
-                color=discord.Color.green()
+            cursor.execute(
+                "SELECT total FROM shulker WHERE user_id = ? AND fecha = ?",
+                (user_id, hoy)
             )
-            await end_channel.send(embed=embed)
+            row = cursor.fetchone()
+            nuevo_total = int(row[0] or 0) if row else cantidad_int
 
-        await interaction.response.send_message("✅ Registro guardado.", ephemeral=True)
+            await actualizar_todos_los_ranking()
+            await actualizar_panel_progreso()
+
+            end_channel = interaction.client.get_channel(END_CHANNEL_ID)
+            if end_channel:
+                embed = discord.Embed(
+                    title="📦 Registro de Shulker",
+                    description=(
+                        f"👤 {interaction.user.mention}\n"
+                        f"➕ Registró: `{cantidad_int}`\n"
+                        f"📊 Total hoy: `{nuevo_total}`"
+                    ),
+                    color=discord.Color.green()
+                )
+                await end_channel.send(embed=embed)
+
+            await interaction.response.send_message(
+                f"✅ Registro guardado. Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.",
+                ephemeral=True
+            )
+
+        except Exception as e:
+            print(f"❌ Error al guardar registro: {e}")
+            await interaction.response.send_message(
+                "❌ Ocurrió un error al guardar el registro.",
+                ephemeral=True
+            )
 
 # ===============================
 # BOTÓN
@@ -528,10 +581,12 @@ async def on_ready():
 
     asegurar_base_progreso_si_falta()
 
+    # Vista persistente
+    bot.add_view(ShulkerButton())
+
     if not ranking_automatico.is_running():
         ranking_automatico.start()
 
-    # Mensaje fijo del botón (no se duplica)
     form_channel = bot.get_channel(FORM_CHANNEL_ID)
     if form_channel:
         msg = await obtener_mensaje_fijo(form_channel, "form_boton")
@@ -539,7 +594,7 @@ async def on_ready():
             content=None,
             embed=discord.Embed(
                 title="📦 Registro de Shulker",
-                description="Presiona el botón para registrar.",
+                description="Presiona el botón para registrar tu aporte de shulkers.",
                 color=discord.Color.green()
             ),
             view=ShulkerButton()
@@ -552,4 +607,3 @@ async def on_ready():
 # RUN
 # ===============================
 bot.run(TOKEN)
-

@@ -27,7 +27,9 @@ PROGRESS_CHANNEL_ID = 1478948711995412702
 TOKEN = os.getenv("DISCORD_TOKEN")
 COOLDOWN_SECONDS = 60
 
-# Metas
+# ===============================
+# METAS
+# ===============================
 TARGET_TOP1_LEVEL = 105_000_000
 TARGET_TOP3_LEVEL = 80_000_000
 DAILY_SHULKER_GOAL = 120
@@ -36,11 +38,12 @@ DAILY_SHULKER_GOAL = 120
 # CONVERSIÓN EXACTA SEGÚN TU SERVER
 # ===============================
 LEVELS_PER_BLOCK = 9
-LEVELS_PER_STACK = 64 * LEVELS_PER_BLOCK         # 576
-LEVELS_PER_SHULKER = 27 * LEVELS_PER_STACK       # 15552
+LEVELS_PER_STACK = 64 * LEVELS_PER_BLOCK          # 576
+LEVELS_PER_SHULKER = 27 * LEVELS_PER_STACK        # 15552
 SHULKERS_PER_PV = 27
 LEVELS_PER_PV = SHULKERS_PER_PV * LEVELS_PER_SHULKER  # 419904
 
+# Nivel exacto base (solo si aún no existe uno guardado)
 DEFAULT_BASE_LEVEL = 42127075
 
 # ===============================
@@ -111,7 +114,7 @@ def clamp_start(d: date) -> date:
     return d if d >= BOT_START_DATE else BOT_START_DATE
 
 # ===============================
-# MIGRACIÓN TABLA SHULKER
+# MIGRACIÓN: asegurar PRIMARY KEY
 # ===============================
 def asegurar_tabla_shulker_con_pk():
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shulker'")
@@ -192,7 +195,7 @@ def barra_progreso(valor: int, maximo: int, largo: int = 10) -> str:
     llenos = max(0, min(largo, llenos))
     return "█" * llenos + "░" * (largo - llenos)
 
-def barra_meta(valor: int, meta: int, largo: int = 16) -> str:
+def barra_meta(valor: int, meta: int, largo: int = 20) -> str:
     if meta <= 0:
         return "░" * largo
     ratio = max(0.0, min(1.0, valor / meta))
@@ -285,26 +288,24 @@ async def actualizar_panel_progreso():
     faltan_top1 = max(0, TARGET_TOP1_LEVEL - nivel_estimado)
     faltan_top3 = max(0, TARGET_TOP3_LEVEL - nivel_estimado)
 
-    shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER
-    shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER
+    shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
+    shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
 
     pv1, sh1 = shulkers_a_pv_y_shulkers(shulkers_top1)
     pv3, sh3 = shulkers_a_pv_y_shulkers(shulkers_top3)
 
     faltan_diario = max(0, DAILY_SHULKER_GOAL - hoy_sh)
 
-    # porcentajes
     pct_top1 = (nivel_estimado / TARGET_TOP1_LEVEL) * 100 if TARGET_TOP1_LEVEL else 0
     pct_top3 = (nivel_estimado / TARGET_TOP3_LEVEL) * 100 if TARGET_TOP3_LEVEL else 0
     pct_dia = (hoy_sh / DAILY_SHULKER_GOAL) * 100 if DAILY_SHULKER_GOAL else 0
 
-    # barras
     bar_top1 = barra_meta(nivel_estimado, TARGET_TOP1_LEVEL, largo=20)
     bar_top3 = barra_meta(nivel_estimado, TARGET_TOP3_LEVEL, largo=20)
     bar_dia = barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20)
 
     embed = discord.Embed(
-        title="🏝️ PROGRESO DE LA ISLA",
+        title="🏝️ PROGRESO DE LA ISLA (PANEL NUEVO)",
         color=discord.Color.dark_teal()
     )
 
@@ -344,7 +345,7 @@ async def actualizar_panel_progreso():
         inline=False
     )
 
-    embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date}")
+    embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'}")
 
     msg = await obtener_mensaje_fijo(channel, "panel_progreso")
     await msg.edit(content=None, embed=embed)
@@ -390,7 +391,7 @@ async def estadoisla(ctx):
     await ctx.reply(embed=embed, mention_author=False)
 
 # ===============================
-# EMBEDS RANKING
+# EMBED RANKING
 # ===============================
 async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo_shulkers: int):
     if not datos:
@@ -426,7 +427,7 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
     return embed
 
 # ===============================
-# ACTUALIZAR TOPS
+# ACTUALIZAR RANKINGS
 # ===============================
 async def total_periodo(where_sql: str, params: tuple) -> int:
     cursor.execute(f"SELECT COALESCE(SUM(total), 0) FROM shulker WHERE {where_sql}", params)
@@ -597,10 +598,10 @@ async def on_ready():
     print(f"📂 DB: {DB_PATH}")
     print(f"📌 Start date: {BOT_START_DATE}")
     print(f"✅ LEVELS_PER_SHULKER: {LEVELS_PER_SHULKER} | LEVELS_PER_PV: {LEVELS_PER_PV}")
+    print("✅ PANEL NUEVO CARGADO")
 
     asegurar_base_progreso_si_falta()
 
-    # Vista persistente
     bot.add_view(ShulkerButton())
 
     if not ranking_automatico.is_running():
@@ -626,4 +627,3 @@ async def on_ready():
 # RUN
 # ===============================
 bot.run(TOKEN)
-

@@ -285,32 +285,51 @@ async def actualizar_panel_progreso():
     faltan_top1 = max(0, TARGET_TOP1_LEVEL - nivel_estimado)
     faltan_top3 = max(0, TARGET_TOP3_LEVEL - nivel_estimado)
 
-    shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
-    shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
+    shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER
+    shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER
 
     pv1, sh1 = shulkers_a_pv_y_shulkers(shulkers_top1)
     pv3, sh3 = shulkers_a_pv_y_shulkers(shulkers_top3)
 
     faltan_diario = max(0, DAILY_SHULKER_GOAL - hoy_sh)
 
-    bar_top1 = barra_meta(nivel_estimado, TARGET_TOP1_LEVEL, largo=16)
-    bar_top3 = barra_meta(nivel_estimado, TARGET_TOP3_LEVEL, largo=16)
+    # porcentajes
+    pct_top1 = (nivel_estimado / TARGET_TOP1_LEVEL) * 100 if TARGET_TOP1_LEVEL else 0
+    pct_top3 = (nivel_estimado / TARGET_TOP3_LEVEL) * 100 if TARGET_TOP3_LEVEL else 0
+    pct_dia = (hoy_sh / DAILY_SHULKER_GOAL) * 100 if DAILY_SHULKER_GOAL else 0
+
+    # barras
+    bar_top1 = barra_meta(nivel_estimado, TARGET_TOP1_LEVEL, largo=20)
+    bar_top3 = barra_meta(nivel_estimado, TARGET_TOP3_LEVEL, largo=20)
+    bar_dia = barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20)
 
     embed = discord.Embed(
-        title="🏝️ PROGRESO DE LA ISLA (PRIVADO)",
-        description=(
-            f"**NIVEL ACTUAL (estimado):** `{nivel_estimado:,}`\n"
-            f"**SHULKERS HOY:** `{hoy_sh:,}` / `{DAILY_SHULKER_GOAL:,}` (FALTAN `{faltan_diario:,}`)\n"
-        ),
+        title="🏝️ PROGRESO DE LA ISLA",
         color=discord.Color.dark_teal()
     )
 
     embed.add_field(
-        name="🎯 META TOP 1",
+        name="🔹 NIVEL ACTUAL",
+        value=f"**{nivel_estimado:,}**",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📦 META DIARIA",
         value=(
-            f"`{nivel_estimado:,}` / `{TARGET_TOP1_LEVEL:,}`\n"
-            f"`{bar_top1}`\n"
-            f"FALTAN: `{faltan_top1:,}` niveles ≈ `{pv1}` PVS + `{sh1}` SHULKERS"
+            f"`{hoy_sh:,} / {DAILY_SHULKER_GOAL:,} shulkers`\n"
+            f"`{bar_dia}` `{pct_dia:.1f}%`\n"
+            f"Faltan: `{faltan_diario:,}`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="👑 META TOP 1",
+        value=(
+            f"`{nivel_estimado:,} / {TARGET_TOP1_LEVEL:,}`\n"
+            f"`{bar_top1}` `{pct_top1:.1f}%`\n"
+            f"Faltan: `{pv1}` PVS + `{sh1}` SHULKERS"
         ),
         inline=False
     )
@@ -318,14 +337,14 @@ async def actualizar_panel_progreso():
     embed.add_field(
         name="📈 META TOP 3",
         value=(
-            f"`{nivel_estimado:,}` / `{TARGET_TOP3_LEVEL:,}`\n"
-            f"`{bar_top3}`\n"
-            f"FALTAN: `{faltan_top3:,}` niveles ≈ `{pv3}` PVS + `{sh3}` SHULKERS"
+            f"`{nivel_estimado:,} / {TARGET_TOP3_LEVEL:,}`\n"
+            f"`{bar_top3}` `{pct_top3:.1f}%`\n"
+            f"Faltan: `{pv3}` PVS + `{sh3}` SHULKERS"
         ),
         inline=False
     )
 
-    embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'}")
+    embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date}")
 
     msg = await obtener_mensaje_fijo(channel, "panel_progreso")
     await msg.edit(content=None, embed=embed)
@@ -607,3 +626,4 @@ async def on_ready():
 # RUN
 # ===============================
 bot.run(TOKEN)
+

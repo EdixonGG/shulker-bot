@@ -205,10 +205,15 @@ def barra_progreso(valor: int, maximo: int, largo: int = 12) -> str:
 
 def barra_meta(valor: int, meta: int, largo: int = 20) -> str:
     if meta <= 0:
-        return "░" * largo
-    ratio = max(0.0, min(1.0, valor / meta))
+        return "▱" * largo
+
+    ratio = valor / meta
+    ratio = max(0.0, min(1.0, ratio))
+
     llenos = int(round(ratio * largo))
-    return "█" * llenos + "░" * (largo - llenos)
+    llenos = max(0, min(largo, llenos))
+
+    return "▰" * llenos + "▱" * (largo - llenos)
 
 def equivalencias(shulkers: int):
     stacks = shulkers * 27

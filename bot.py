@@ -60,7 +60,6 @@ intents.members = True
 
 class ShulkerBot(commands.Bot):
     async def setup_hook(self):
-        # Vista persistente real
         self.add_view(ShulkerButton())
         print("✅ Vista persistente registrada en setup_hook")
 
@@ -188,13 +187,21 @@ def format_number(num: int) -> str:
         return f"{v:.1f}K" if v < 10 else f"{v:.0f}K"
     return str(num)
 
-def barra_progreso(valor: int, maximo: int, largo: int = 10) -> str:
+def cortar_nombre(nombre: str, limite: int = 20) -> str:
+    nombre = str(nombre or "")
+    return nombre if len(nombre) <= limite else nombre[:limite - 1] + "…"
+
+def barra_progreso(valor: int, maximo: int, largo: int = 12) -> str:
     if maximo <= 0:
-        return "░" * largo
+        return "▱" * largo
+
     ratio = valor / maximo
+    ratio = max(0.0, min(1.0, ratio))
+
     llenos = int(round(ratio * largo))
     llenos = max(0, min(largo, llenos))
-    return "█" * llenos + "░" * (largo - llenos)
+
+    return "▰" * llenos + "▱" * (largo - llenos)
 
 def barra_meta(valor: int, meta: int, largo: int = 20) -> str:
     if meta <= 0:
@@ -406,14 +413,32 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
     else:
         maximo = int(datos[0][1] or 0)
         lines = []
+
         for i, (user, total) in enumerate(datos, start=1):
             total = int(total or 0)
-            medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-            bar = barra_progreso(total, maximo, largo=10)
-            lines.append(f"{medalla} **{user}** — `{format_number(total)}` `{bar}`")
-        ranking_text = "\n".join(lines)
+            user = cortar_nombre(user, 20)
 
-    _, niveles, pv, resto = equivalencias(total_periodo_shulkers)
+            if i == 1:
+                medalla = "🥇"
+            elif i == 2:
+                medalla = "🥈"
+            elif i == 3:
+                medalla = "🥉"
+            else:
+                medalla = "▫️"
+
+            porcentaje = int(round((total / maximo) * 100)) if maximo > 0 else 0
+            bar = barra_progreso(total, maximo, largo=12)
+
+            lines.append(
+                f"{medalla} **{user}**\n\n"
+                f"{total} shulkers • {porcentaje}%\n"
+                f"{bar}"
+            )
+
+        ranking_text = "\n\n".join(lines)
+
+    stacks, niveles, pv, resto = equivalencias(total_periodo_shulkers)
 
     resumen = (
         f"`{format_number(total_periodo_shulkers)}` SHULKERS • "

@@ -391,6 +391,26 @@ def is_staff_member(member: discord.Member) -> bool:
         or member.guild_permissions.manage_messages
     )
 
+def get_staff_action_info(action: str) -> tuple[str, str]:
+    mapping = {
+        "end_request_created": (
+            "📥 Nueva solicitud de End aportada",
+            "El usuario envió cantidad + evidencia y quedó pendiente de revisión del staff."
+        ),
+        "end_request_approved": (
+            "✅ Solicitud aprobada",
+            "La evidencia fue aceptada y la cantidad ya fue sumada al ranking público de End aportada."
+        ),
+        "end_request_rejected": (
+            "❌ Solicitud rechazada",
+            "La evidencia fue revisada y rechazada por el staff. No se sumó al ranking público."
+        ),
+    }
+    return mapping.get(
+        action,
+        ("🛡 Acción de staff", "Se registró una acción administrativa.")
+    )
+
 # ===============================
 # COOLDOWNS PERSISTENTES
 # ===============================
@@ -558,13 +578,19 @@ async def log_staff_action(
                     color = discord.Color.green()
                 elif action == "end_request_rejected":
                     color = discord.Color.red()
+                elif action == "end_request_created":
+                    color = discord.Color.orange()
+
+                action_title, action_desc = get_staff_action_info(action)
 
                 embed = discord.Embed(
                     title="🛡 Staff Log",
+                    description=action_desc,
                     color=color,
                     timestamp=utc_now()
                 )
-                embed.add_field(name="Acción", value=f"`{action}`", inline=False)
+
+                embed.add_field(name="Acción", value=action_title, inline=False)
 
                 if request_id:
                     embed.add_field(name="Solicitud", value=f"`#{request_id}`", inline=True)
@@ -573,7 +599,7 @@ async def log_staff_action(
                 if amount is not None:
                     embed.add_field(name="Cantidad", value=f"`{amount}` shulkers", inline=True)
                 if actor_user_id:
-                    embed.add_field(name="Staff", value=f"<@{actor_user_id}>", inline=True)
+                    embed.add_field(name="Realizado por", value=f"<@{actor_user_id}>", inline=True)
                 if reason:
                     embed.add_field(name="Motivo", value=reason[:1024], inline=False)
 
@@ -971,7 +997,9 @@ async def publicar_boton_end_aportada():
                     "2. Escribes la cantidad\n"
                     "3. Subes una imagen como evidencia\n"
                     "4. El staff revisa\n"
-                    "5. Solo lo aprobado entra al top público"
+                    "5. Solo lo aprobado entra al top público\n\n"
+                    "⚠️ En este canal no se permite escribir texto.\n"
+                    "Solo se acepta la imagen de evidencia después de registrar la cantidad."
                 ),
                 color=discord.Color.blurple(),
                 timestamp=utc_now()
@@ -1172,7 +1200,8 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
                 "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.\n"
                 f"⏳ Tienes `{END_UPLOAD_TIMEOUT_SECONDS}` segundos.\n"
                 "✅ Cuando la subas, se enviará al canal privado de staff para revisión.\n"
-                "⚠️ Solo lo aprobado contará en el top público.",
+                "⚠️ Solo lo aprobado contará en el top público.\n"
+                "🚫 No escribas texto en el canal, solo sube la imagen.",
                 ephemeral=True
             )
 
@@ -1512,6 +1541,53 @@ class EndReviewView(discord.ui.View):
                 )
 
 # ===============================
+# RESTRICCIÓN DEL CANAL END APORTADA
+# ===============================
+async def manejar_restriccion_canal_end_aportada(message: discord.Message) -> bool:
+    """
+    Devuelve True si el mensaje fue consumido por esta lógica.
+    """
+    try:
+        if message.channel.id != END_APORTE_FORM_CHANNEL_ID:
+            return False
+
+        if isinstance(message.author, discord.Member) and is_staff_member(message.author):
+            if message.content.startswith("!"):
+                return False
+
+        pendiente = get_pending_end(message.author.id)
+
+        # Si el usuario tiene registro pendiente, dejamos que pase al flujo de evidencia
+        if pendiente:
+            consumido = await manejar_subida_pendiente_end(message)
+            return consumido
+
+        # Si NO tiene pendiente, en este canal no debe escribir ni subir archivos
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        aviso = None
+        if message.attachments:
+            aviso = await message.channel.send(
+                f"{message.author.mention} ❌ Primero debes pulsar el botón **Registrar End Aportada**, "
+                f"escribir la cantidad y recién después subir la imagen.",
+                delete_after=10
+            )
+        else:
+            aviso = await message.channel.send(
+                f"{message.author.mention} 🚫 En este canal no se permite escribir texto.\n"
+                f"Usa el botón **Registrar End Aportada** y luego sube solo la imagen de evidencia.",
+                delete_after=10
+            )
+
+        return True
+    except Exception as e:
+        print(f"❌ Error en manejar_restriccion_canal_end_aportada: {e}")
+        return False
+
+# ===============================
 # CAPTURA DE IMAGEN PARA END APORTADA
 # ===============================
 async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
@@ -1529,9 +1605,14 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
             return False
 
         if not message.attachments:
-            await message.reply(
-                "📸 Aún estoy esperando tu **imagen de evidencia** para completar el registro de End aportada.",
-                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            await message.channel.send(
+                f"{message.author.mention} 📸 Aún estoy esperando tu **imagen de evidencia** para completar el registro de End aportada.",
+                delete_after=10
             )
             return True
 
@@ -1542,17 +1623,22 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
                 break
 
         if not imagen:
-            await message.reply(
-                "❌ Debes subir **una imagen válida** como evidencia.",
-                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            await message.channel.send(
+                f"{message.author.mention} ❌ Debes subir **una imagen válida** como evidencia.",
+                delete_after=10
             )
             return True
 
         review_channel = bot.get_channel(END_APORTE_REVIEW_CHANNEL_ID)
         if not review_channel:
-            await message.reply(
-                "❌ No se encontró el canal privado de revisión del staff.",
-                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            await message.channel.send(
+                f"{message.author.mention} ❌ No se encontró el canal privado de revisión del staff.",
+                delete_after=10
             )
             return True
 
@@ -1576,9 +1662,9 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
         )
 
         if not staff_evidence_msg.attachments:
-            await message.reply(
-                "❌ No se pudo reenviar la imagen al canal de staff.",
-                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            await message.channel.send(
+                f"{message.author.mention} ❌ No se pudo reenviar la imagen al canal de staff.",
+                delete_after=10
             )
             return True
 
@@ -1618,11 +1704,11 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
 
         clear_pending_end(message.author.id)
 
-        await message.reply(
-            f"✅ Tu evidencia fue enviada al **staff** para revisión.\n"
+        await message.channel.send(
+            f"{message.author.mention} ✅ Tu evidencia fue enviada al **staff** para revisión.\n"
             f"🆔 Solicitud: `#{request_id}`\n"
-            f"⏳ Este mensaje y tu imagen se borrarán en {PUBLIC_EVIDENCE_DELETE_SECONDS} segundos.",
-            delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            f"⏳ Tu imagen se borrará en {PUBLIC_EVIDENCE_DELETE_SECONDS} segundos.",
+            delete_after=10
         )
 
         try:
@@ -1662,6 +1748,10 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
+        return
+
+    consumido_restriccion = await manejar_restriccion_canal_end_aportada(message)
+    if consumido_restriccion:
         return
 
     consumido = await manejar_subida_pendiente_end(message)
@@ -1756,8 +1846,9 @@ async def stafflogs(ctx, limite: int = 10):
 
     lines = []
     for r in rows:
+        action_title, _ = get_staff_action_info(r["action"])
         texto = (
-            f"• `{r['created_at']}` | `{r['action']}`"
+            f"• `{r['created_at']}` | **{action_title}**"
             f" | req `#{r['request_id'] or '-'}'"
             f" | usuario `{r['target_username'] or '-'}'"
             f" | staff `{r['actor_username'] or '-'}'"

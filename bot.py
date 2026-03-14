@@ -24,7 +24,7 @@ END_APORTE_REVIEW_CHANNEL_ID = 1482278518552530955
 
 # Canal opcional para logs del staff
 # Pon 0 si no quieres usarlo
-STAFF_LOG_CHANNEL_ID = 0
+STAFF_LOG_CHANNEL_ID = 1462316363552133202
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 

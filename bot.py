@@ -597,7 +597,7 @@ async def log_staff_action(
                 if target_user_id:
                     embed.add_field(name="Usuario", value=f"<@{target_user_id}>", inline=True)
                 if amount is not None:
-                    embed.add_field(name="Cantidad", value=f"`{amount}` shulkers", inline=True)
+                    embed.add_field(name="Cantidad", value=f"`{amount}` end aportada", inline=True)
                 if actor_user_id:
                     embed.add_field(name="Realizado por", value=f"<@{actor_user_id}>", inline=True)
                 if reason:
@@ -636,7 +636,7 @@ def construir_embed_revision(request_row, reviewer_name: str | None = None):
     )
 
     embed.add_field(name="👤 Usuario", value=f"<@{user_id}>", inline=True)
-    embed.add_field(name="📦 Cantidad", value=f"`{cantidad}` shulkers", inline=True)
+    embed.add_field(name="📦 Cantidad", value=f"`{cantidad}` end aportada", inline=True)
     embed.add_field(name="📅 Fecha", value=f"`{fecha_registro}`", inline=True)
     embed.add_field(name="📌 Estado", value=estado_texto, inline=False)
     embed.add_field(name="🆔 Solicitud", value=f"`#{request_id}`", inline=True)
@@ -768,7 +768,16 @@ async def actualizar_panel_progreso():
 # ===============================
 # RANKINGS
 # ===============================
-async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo_shulkers: int):
+async def crear_embed_ranking(
+    titulo,
+    emoji,
+    color,
+    datos,
+    footer,
+    total_periodo_shulkers: int,
+    mostrar_equivalencias: bool = True,
+    unidad: str = "shulkers"
+):
     if not datos:
         ranking_text = "_Sin registros aún_"
         maximo = 0
@@ -794,19 +803,11 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
 
             lines.append(
                 f"{medalla} **{user}**\n\n"
-                f"{total} shulkers • {porcentaje}%\n"
+                f"{total} {unidad} • {porcentaje}%\n"
                 f"{bar}"
             )
 
         ranking_text = "\n\n".join(lines)
-
-    stacks, niveles, pv, resto = equivalencias(total_periodo_shulkers)
-
-    resumen = (
-        f"`{format_number(total_periodo_shulkers)}` SHULKERS • "
-        f"`{format_number(niveles)}` NIVELES • "
-        f"`{pv}` PVS"
-    )
 
     embed = discord.Embed(
         title=f"{emoji} {titulo}",
@@ -814,9 +815,26 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
         color=color,
         timestamp=utc_now()
     )
-    embed.add_field(name="📊 RESUMEN", value=resumen, inline=False)
-    embed.add_field(name="📦 TOTAL", value=f"`{format_number(total_periodo_shulkers)}` SHULKERS", inline=True)
-    embed.add_field(name="⚖ EQUIVALENTE", value=f"`{pv}` PVS + `{resto}` SHULKERS", inline=True)
+
+    if mostrar_equivalencias:
+        stacks, niveles, pv, resto = equivalencias(total_periodo_shulkers)
+
+        resumen = (
+            f"`{format_number(total_periodo_shulkers)}` SHULKERS • "
+            f"`{format_number(niveles)}` NIVELES • "
+            f"`{pv}` PVS"
+        )
+
+        embed.add_field(name="📊 RESUMEN", value=resumen, inline=False)
+        embed.add_field(name="📦 TOTAL", value=f"`{format_number(total_periodo_shulkers)}` SHULKERS", inline=True)
+        embed.add_field(name="⚖ EQUIVALENTE", value=f"`{pv}` PVS + `{resto}` SHULKERS", inline=True)
+    else:
+        embed.add_field(
+            name="📦 TOTAL",
+            value=f"`{format_number(total_periodo_shulkers)}` {unidad.upper()}",
+            inline=False
+        )
+
     embed.set_footer(text=f"{footer} | Hora Chile")
     return embed
 
@@ -943,13 +961,34 @@ async def actualizar_rankings_end():
         total_diario = await total_periodo_end("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
 
         embed_mensual = await crear_embed_ranking(
-            "END APORTADA • TOP MENSUAL", "🪨", discord.Color.dark_gray(), mensual, "Mes actual", total_mensual
+            "END APORTADA • TOP MENSUAL",
+            "🪨",
+            discord.Color.dark_gray(),
+            mensual,
+            "Mes actual",
+            total_mensual,
+            mostrar_equivalencias=False,
+            unidad="end aportada"
         )
         embed_semanal = await crear_embed_ranking(
-            "END APORTADA • TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal
+            "END APORTADA • TOP SEMANAL",
+            "📈",
+            discord.Color.blue(),
+            semanal,
+            f"Desde {inicio_semana}",
+            total_semanal,
+            mostrar_equivalencias=False,
+            unidad="end aportada"
         )
         embed_diario = await crear_embed_ranking(
-            "END APORTADA • TOP DIARIO", "⚡", discord.Color.gold(), diario, f"Hoy • {hoy}", total_diario
+            "END APORTADA • TOP DIARIO",
+            "⚡",
+            discord.Color.gold(),
+            diario,
+            f"Hoy • {hoy}",
+            total_diario,
+            mostrar_equivalencias=False,
+            unidad="end aportada"
         )
 
         msg_mensual = await obtener_mensaje_fijo(channel, "ranking_end_aportada_mensual")
@@ -1294,7 +1333,7 @@ class RejectReasonModal(discord.ui.Modal, title="Rechazar solicitud"):
             try:
                 usuario = await bot.fetch_user(request_row["user_id"])
                 await usuario.send(
-                    f"❌ Tu solicitud de **End aportada** por `{request_row['cantidad']}` shulkers fue **rechazada** por el staff.\n"
+                    f"❌ Tu solicitud de **End aportada** por `{request_row['cantidad']}` fue **rechazada** por el staff.\n"
                     f"📝 Motivo: {motivo}"
                 )
             except Exception:
@@ -1513,7 +1552,7 @@ class EndReviewView(discord.ui.View):
             try:
                 usuario = await bot.fetch_user(request_row["user_id"])
                 await usuario.send(
-                    f"✅ Tu solicitud de **End aportada** por `{request_row['cantidad']}` shulkers fue **aprobada**."
+                    f"✅ Tu solicitud de **End aportada** por `{request_row['cantidad']}` fue **aprobada**."
                 )
             except Exception:
                 pass
@@ -1568,15 +1607,14 @@ async def manejar_restriccion_canal_end_aportada(message: discord.Message) -> bo
         except Exception:
             pass
 
-        aviso = None
         if message.attachments:
-            aviso = await message.channel.send(
+            await message.channel.send(
                 f"{message.author.mention} ❌ Primero debes pulsar el botón **Registrar End Aportada**, "
                 f"escribir la cantidad y recién después subir la imagen.",
                 delete_after=10
             )
         else:
-            aviso = await message.channel.send(
+            await message.channel.send(
                 f"{message.author.mention} 🚫 En este canal no se permite escribir texto.\n"
                 f"Usa el botón **Registrar End Aportada** y luego sube solo la imagen de evidencia.",
                 delete_after=10
@@ -1715,7 +1753,7 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
             await message.author.send(
                 f"✅ Tu solicitud de **End aportada** fue registrada correctamente.\n"
                 f"🆔 Solicitud: `#{request_id}`\n"
-                f"📦 Cantidad: `{pendiente['cantidad']}` shulkers\n"
+                f"📦 Cantidad: `{pendiente['cantidad']}` end aportada\n"
                 f"📅 Fecha: `{pendiente['fecha']}`\n"
                 "⏳ Ahora está pendiente de revisión del staff."
             )

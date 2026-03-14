@@ -1,8 +1,8 @@
 import os
-import time
 import sqlite3
 import discord
 import shutil
+from zoneinfo import ZoneInfo
 from datetime import date, timedelta, datetime
 from discord.ext import commands, tasks
 
@@ -17,17 +17,27 @@ PROGRESS_CHANNEL_ID = 1478948711995412702
 # ===============================
 # NUEVO SISTEMA END APORTADA
 # ===============================
-END_APORTE_FORM_CHANNEL_ID = 1482278081552187435         # <-- PON AQUÍ EL ID DEL CANAL DEL BOTÓN + SUBIDA DE IMAGEN
-END_APORTE_RANKING_CHANNEL_ID = 1482278329871503461      # <-- PON AQUÍ EL ID DEL CANAL DE TOPS PÚBLICOS
-END_APORTE_REVIEW_CHANNEL_ID = 1482278518552530955       # <-- PON AQUÍ EL ID DEL CANAL PRIVADO DE STAFF
+END_APORTE_FORM_CHANNEL_ID = 1482278081552187435
+END_APORTE_RANKING_CHANNEL_ID = 1482278329871503461
+END_APORTE_REVIEW_CHANNEL_ID = 1482278518552530955
+
+# Canal opcional para logs del staff
+# Pon 0 si no quieres usar canal de logs
+STAFF_LOG_CHANNEL_ID = 0
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+
 COOLDOWN_SECONDS = 60
 END_UPLOAD_TIMEOUT_SECONDS = 120
 
 TARGET_TOP1_LEVEL = 105_000_000
 TARGET_TOP3_LEVEL = 80_000_000
 DAILY_SHULKER_GOAL = 120
+
+# ===============================
+# ZONA HORARIA
+# ===============================
+CHILE_TZ = ZoneInfo("America/Santiago")
 
 # ===============================
 # CONVERSIÓN EXACTA SEGÚN TU SERVER
@@ -57,6 +67,7 @@ if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
 db = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
 db.execute("PRAGMA journal_mode=WAL;")
 db.execute("PRAGMA synchronous=NORMAL;")
+db.row_factory = sqlite3.Row
 cursor = db.cursor()
 
 # ===============================
@@ -74,6 +85,35 @@ class ShulkerBot(commands.Bot):
         print("✅ Vistas persistentes registradas en setup_hook")
 
 bot = ShulkerBot(command_prefix="!", intents=intents)
+
+# ===============================
+# FECHAS / TIEMPO
+# ===============================
+def utc_now() -> datetime:
+    return discord.utils.utcnow()
+
+def local_now() -> datetime:
+    return utc_now().astimezone(CHILE_TZ)
+
+def today_local() -> date:
+    return local_now().date()
+
+def local_date_str() -> str:
+    return str(today_local())
+
+def local_datetime_str() -> str:
+    return local_now().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+def iso_utc_now() -> str:
+    return utc_now().isoformat()
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
 
 # ===============================
 # TABLAS
@@ -118,9 +158,46 @@ CREATE TABLE IF NOT EXISTS end_requests (
     cantidad INTEGER NOT NULL,
     image_url TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
+    rejection_reason TEXT,
     review_message_id INTEGER,
     reviewed_by INTEGER,
     reviewed_at TEXT,
+    created_at TEXT NOT NULL
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS user_cooldowns (
+    feature TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (feature, user_id)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pending_end_uploads (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    fecha TEXT NOT NULL,
+    cantidad INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS staff_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    request_id INTEGER,
+    target_user_id INTEGER,
+    target_username TEXT,
+    actor_user_id INTEGER,
+    actor_username TEXT,
+    amount INTEGER,
+    reason TEXT,
     created_at TEXT NOT NULL
 )
 """)
@@ -133,10 +210,10 @@ db.commit()
 def get_bot_start_date() -> date:
     cursor.execute("SELECT value FROM bot_config WHERE key='start_date'")
     row = cursor.fetchone()
-    if row and row[0]:
-        return date.fromisoformat(row[0])
+    if row and row["value"]:
+        return date.fromisoformat(row["value"])
 
-    start = date.today().replace(day=1)
+    start = today_local().replace(day=1)
     cursor.execute(
         "INSERT OR REPLACE INTO bot_config (key, value) VALUES ('start_date', ?)",
         (str(start),)
@@ -172,7 +249,7 @@ def asegurar_tabla_shulker_con_pk():
 
     cursor.execute("PRAGMA table_info(shulker)")
     cols = cursor.fetchall()
-    pk_cols = [c[1] for c in cols if c[5] > 0]
+    pk_cols = [c["name"] for c in cols if c["pk"] > 0]
 
     if set(pk_cols) == {"user_id", "fecha"}:
         print("✅ Tabla shulker ya tiene PRIMARY KEY (user_id, fecha)")
@@ -206,15 +283,17 @@ def asegurar_tabla_shulker_con_pk():
 asegurar_tabla_shulker_con_pk()
 
 # ===============================
-# COOLDOWNS
+# MIGRACIONES ADICIONALES
 # ===============================
-cooldowns = {}
-end_aporte_cooldowns = {}
+def asegurar_columna_si_no_existe(tabla: str, columna: str, definicion: str):
+    cursor.execute(f"PRAGMA table_info({tabla})")
+    cols = [r["name"] for r in cursor.fetchall()]
+    if columna not in cols:
+        cursor.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}")
+        db.commit()
+        print(f"✅ Columna agregada: {tabla}.{columna}")
 
-# ===============================
-# PENDIENTES DE IMAGEN
-# ===============================
-end_upload_pending = {}
+asegurar_columna_si_no_existe("end_requests", "rejection_reason", "TEXT")
 
 # ===============================
 # UTILIDADES
@@ -236,25 +315,17 @@ def cortar_nombre(nombre: str, limite: int = 20) -> str:
 def barra_progreso(valor: int, maximo: int, largo: int = 12) -> str:
     if maximo <= 0:
         return "▱" * largo
-
-    ratio = valor / maximo
-    ratio = max(0.0, min(1.0, ratio))
-
+    ratio = max(0.0, min(1.0, valor / maximo))
     llenos = int(round(ratio * largo))
     llenos = max(0, min(largo, llenos))
-
     return "▰" * llenos + "▱" * (largo - llenos)
 
 def barra_meta(valor: int, meta: int, largo: int = 20) -> str:
     if meta <= 0:
         return "▱" * largo
-
-    ratio = valor / meta
-    ratio = max(0.0, min(1.0, ratio))
-
+    ratio = max(0.0, min(1.0, valor / meta))
     llenos = int(round(ratio * largo))
     llenos = max(0, min(largo, llenos))
-
     return "▰" * llenos + "▱" * (largo - llenos)
 
 def equivalencias(shulkers: int):
@@ -272,7 +343,7 @@ def shulkers_a_pv_y_shulkers(shulkers: int):
 def get_progress_value(key: str, default: str = "") -> str:
     cursor.execute("SELECT value FROM island_progress WHERE key = ?", (key,))
     row = cursor.fetchone()
-    return row[0] if row and row[0] is not None else default
+    return row["value"] if row and row["value"] is not None else default
 
 def set_progress_value(key: str, value: str):
     cursor.execute(
@@ -282,13 +353,15 @@ def set_progress_value(key: str, value: str):
     db.commit()
 
 def total_shulkers_all_time() -> int:
-    cursor.execute("SELECT COALESCE(SUM(total), 0) FROM shulker")
-    return int(cursor.fetchone()[0] or 0)
+    cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker")
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
 
 def total_shulkers_today() -> int:
-    hoy = str(date.today())
-    cursor.execute("SELECT COALESCE(SUM(total), 0) FROM shulker WHERE fecha = ?", (hoy,))
-    return int(cursor.fetchone()[0] or 0)
+    hoy = local_date_str()
+    cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker WHERE fecha = ?", (hoy,))
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
 
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
@@ -296,7 +369,7 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
 
     if row:
         try:
-            return await channel.fetch_message(row[0])
+            return await channel.fetch_message(row["message_id"])
         except Exception as e:
             print(f"⚠️ No se pudo recuperar mensaje fijo {tipo}: {e}")
 
@@ -308,37 +381,126 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     db.commit()
     return msg
 
-def now_str() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+def is_staff_member(member: discord.Member) -> bool:
+    return (
+        member.guild_permissions.administrator
+        or member.guild_permissions.manage_guild
+        or member.guild_permissions.manage_messages
+    )
 
-def limpiar_pendiente_end(user_id: int):
-    if user_id in end_upload_pending:
-        del end_upload_pending[user_id]
+# ===============================
+# COOLDOWNS PERSISTENTES
+# ===============================
+def cleanup_expired_cooldowns():
+    cursor.execute(
+        "DELETE FROM user_cooldowns WHERE expires_at <= ?",
+        (iso_utc_now(),)
+    )
+    db.commit()
+
+def set_cooldown(feature: str, user_id: int, seconds: int):
+    expires_at = (utc_now().timestamp() + seconds)
+    expires_iso = datetime.fromtimestamp(expires_at, tz=ZoneInfo("UTC")).isoformat()
+    cursor.execute("""
+        INSERT OR REPLACE INTO user_cooldowns (feature, user_id, expires_at)
+        VALUES (?, ?, ?)
+    """, (feature, user_id, expires_iso))
+    db.commit()
+
+def get_cooldown_remaining(feature: str, user_id: int) -> int:
+    cleanup_expired_cooldowns()
+    cursor.execute("""
+        SELECT expires_at
+        FROM user_cooldowns
+        WHERE feature = ? AND user_id = ?
+    """, (feature, user_id))
+    row = cursor.fetchone()
+    if not row:
+        return 0
+
+    expires_dt = parse_iso_datetime(row["expires_at"])
+    if not expires_dt:
+        cursor.execute("DELETE FROM user_cooldowns WHERE feature = ? AND user_id = ?", (feature, user_id))
+        db.commit()
+        return 0
+
+    restante = int((expires_dt - utc_now()).total_seconds())
+    if restante <= 0:
+        cursor.execute("DELETE FROM user_cooldowns WHERE feature = ? AND user_id = ?", (feature, user_id))
+        db.commit()
+        return 0
+
+    return restante
+
+# ===============================
+# PENDIENTES DE IMAGEN PERSISTENTES
+# ===============================
+def cleanup_expired_pending_end():
+    cursor.execute(
+        "DELETE FROM pending_end_uploads WHERE expires_at <= ?",
+        (iso_utc_now(),)
+    )
+    db.commit()
+
+def save_pending_end(user_id: int, username: str, fecha: str, cantidad: int, channel_id: int):
+    now = utc_now()
+    expires = datetime.fromtimestamp(
+        now.timestamp() + END_UPLOAD_TIMEOUT_SECONDS,
+        tz=ZoneInfo("UTC")
+    )
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO pending_end_uploads
+        (user_id, username, fecha, cantidad, channel_id, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        username,
+        fecha,
+        cantidad,
+        channel_id,
+        now.isoformat(),
+        expires.isoformat()
+    ))
+    db.commit()
+
+def clear_pending_end(user_id: int):
+    cursor.execute("DELETE FROM pending_end_uploads WHERE user_id = ?", (user_id,))
+    db.commit()
 
 def get_pending_end(user_id: int):
-    data = end_upload_pending.get(user_id)
-    if not data:
-        return None
+    cleanup_expired_pending_end()
+    cursor.execute("""
+        SELECT user_id, username, fecha, cantidad, channel_id, created_at, expires_at
+        FROM pending_end_uploads
+        WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    return row
 
-    if time.time() - data["timestamp"] > END_UPLOAD_TIMEOUT_SECONDS:
-        limpiar_pendiente_end(user_id)
-        return None
+def get_pending_end_remaining_seconds(user_id: int) -> int:
+    row = get_pending_end(user_id)
+    if not row:
+        return 0
 
-    return data
+    expires_dt = parse_iso_datetime(row["expires_at"])
+    if not expires_dt:
+        clear_pending_end(user_id)
+        return 0
 
-def is_staff_member(member: discord.Member) -> bool:
-    if member.guild_permissions.administrator:
-        return True
-    if member.guild_permissions.manage_guild:
-        return True
-    if member.guild_permissions.manage_messages:
-        return True
-    return False
+    restante = int((expires_dt - utc_now()).total_seconds())
+    if restante <= 0:
+        clear_pending_end(user_id)
+        return 0
+    return restante
 
+# ===============================
+# REQUESTS / LOGS
+# ===============================
 def get_request_by_review_message_id(message_id: int):
     cursor.execute("""
         SELECT id, user_id, username, fecha, cantidad, image_url, status,
-               review_message_id, reviewed_by, reviewed_at, created_at
+               rejection_reason, review_message_id, reviewed_by, reviewed_at, created_at
         FROM end_requests
         WHERE review_message_id = ?
     """, (message_id,))
@@ -347,28 +509,86 @@ def get_request_by_review_message_id(message_id: int):
 def get_request_by_id(request_id: int):
     cursor.execute("""
         SELECT id, user_id, username, fecha, cantidad, image_url, status,
-               review_message_id, reviewed_by, reviewed_at, created_at
+               rejection_reason, review_message_id, reviewed_by, reviewed_at, created_at
         FROM end_requests
         WHERE id = ?
     """, (request_id,))
     return cursor.fetchone()
 
-def construir_embed_revision(request_row, estado_override: str | None = None, reviewer_name: str | None = None):
-    (
-        request_id,
-        user_id,
-        username,
-        fecha_registro,
-        cantidad,
-        image_url,
-        status,
-        review_message_id,
-        reviewed_by,
-        reviewed_at,
-        created_at
-    ) = request_row
+async def log_staff_action(
+    action: str,
+    request_id: int | None,
+    target_user_id: int | None,
+    target_username: str | None,
+    actor_user_id: int | None,
+    actor_username: str | None,
+    amount: int | None,
+    reason: str | None = None
+):
+    created_at = iso_utc_now()
 
-    status = estado_override or status
+    cursor.execute("""
+        INSERT INTO staff_logs (
+            action, request_id, target_user_id, target_username,
+            actor_user_id, actor_username, amount, reason, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        action,
+        request_id,
+        target_user_id,
+        target_username,
+        actor_user_id,
+        actor_username,
+        amount,
+        reason,
+        created_at
+    ))
+    db.commit()
+
+    if STAFF_LOG_CHANNEL_ID:
+        try:
+            ch = bot.get_channel(STAFF_LOG_CHANNEL_ID)
+            if ch:
+                color = discord.Color.blurple()
+                if action == "end_request_approved":
+                    color = discord.Color.green()
+                elif action == "end_request_rejected":
+                    color = discord.Color.red()
+
+                embed = discord.Embed(
+                    title="🛡 Staff Log",
+                    color=color,
+                    timestamp=utc_now()
+                )
+                embed.add_field(name="Acción", value=f"`{action}`", inline=False)
+
+                if request_id:
+                    embed.add_field(name="Solicitud", value=f"`#{request_id}`", inline=True)
+                if target_user_id:
+                    embed.add_field(name="Usuario", value=f"<@{target_user_id}>", inline=True)
+                if amount is not None:
+                    embed.add_field(name="Cantidad", value=f"`{amount}` shulkers", inline=True)
+                if actor_user_id:
+                    embed.add_field(name="Staff", value=f"<@{actor_user_id}>", inline=True)
+                if reason:
+                    embed.add_field(name="Motivo", value=reason[:1024], inline=False)
+
+                await ch.send(embed=embed)
+        except Exception as e:
+            print(f"⚠️ No se pudo enviar log al canal staff: {e}")
+
+def construir_embed_revision(request_row, reviewer_name: str | None = None):
+    request_id = request_row["id"]
+    user_id = request_row["user_id"]
+    cantidad = request_row["cantidad"]
+    fecha_registro = request_row["fecha"]
+    image_url = request_row["image_url"]
+    status = request_row["status"]
+    rejection_reason = request_row["rejection_reason"]
+    reviewed_by = request_row["reviewed_by"]
+    reviewed_at = request_row["reviewed_at"]
+    created_at = request_row["created_at"]
 
     if status == "approved":
         color = discord.Color.green()
@@ -383,7 +603,7 @@ def construir_embed_revision(request_row, estado_override: str | None = None, re
     embed = discord.Embed(
         title="🪨 Solicitud de End aportada",
         color=color,
-        timestamp=datetime.utcnow()
+        timestamp=utc_now()
     )
 
     embed.add_field(name="👤 Usuario", value=f"<@{user_id}>", inline=True)
@@ -406,6 +626,9 @@ def construir_embed_revision(request_row, estado_override: str | None = None, re
             inline=False
         )
 
+    if status == "rejected" and rejection_reason:
+        embed.add_field(name="📝 Motivo de rechazo", value=rejection_reason[:1024], inline=False)
+
     embed.set_image(url=image_url)
     embed.set_footer(text=f"Solicitud #{request_id}")
     return embed
@@ -420,7 +643,7 @@ def asegurar_base_progreso_si_falta():
 
     set_progress_value("base_level", str(DEFAULT_BASE_LEVEL))
     set_progress_value("base_shulkers", str(total_shulkers_all_time()))
-    set_progress_value("base_date", str(date.today()))
+    set_progress_value("base_date", local_date_str())
     print(f"✅ Base progreso creada automáticamente: {DEFAULT_BASE_LEVEL:,}")
 
 async def actualizar_panel_progreso():
@@ -465,7 +688,8 @@ async def actualizar_panel_progreso():
 
         embed = discord.Embed(
             title="🏝️ PROGRESO DE LA ISLA (PANEL NUEVO)",
-            color=discord.Color.dark_teal()
+            color=discord.Color.dark_teal(),
+            timestamp=utc_now()
         )
 
         embed.add_field(
@@ -504,53 +728,13 @@ async def actualizar_panel_progreso():
             inline=False
         )
 
-        embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'}")
+        embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'} | Hora Chile")
 
         msg = await obtener_mensaje_fijo(channel, "panel_progreso")
         await msg.edit(content=None, embed=embed)
         print("✅ Panel de progreso actualizado")
     except Exception as e:
         print(f"❌ Error en actualizar_panel_progreso: {e}")
-
-# ===============================
-# COMANDOS
-# ===============================
-@bot.command(name="setnivel")
-@commands.has_permissions(administrator=True)
-async def setnivel(ctx, nivel: int):
-    set_progress_value("base_level", str(nivel))
-    set_progress_value("base_shulkers", str(total_shulkers_all_time()))
-    set_progress_value("base_date", str(date.today()))
-    await ctx.reply(
-        f"✅ Nivel base fijado en `{nivel:,}` y progreso recalibrado.",
-        mention_author=False
-    )
-    await actualizar_panel_progreso()
-
-@bot.command(name="estadoisla")
-@commands.has_permissions(administrator=True)
-async def estadoisla(ctx):
-    base_level = int(get_progress_value("base_level", "0") or 0)
-    base_shulkers = int(get_progress_value("base_shulkers", "0") or 0)
-    base_date = get_progress_value("base_date", "sin fecha")
-
-    total_sh = total_shulkers_all_time()
-    nuevos_sh = max(0, total_sh - base_shulkers)
-    niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
-    nivel_estimado = base_level + niveles_ganados
-
-    embed = discord.Embed(
-        title="📊 Estado actual de la isla",
-        color=discord.Color.blurple()
-    )
-    embed.add_field(name="Base nivel", value=f"`{base_level:,}`", inline=False)
-    embed.add_field(name="Base shulkers", value=f"`{base_shulkers:,}`", inline=True)
-    embed.add_field(name="Shulkers totales", value=f"`{total_sh:,}`", inline=True)
-    embed.add_field(name="Shulkers desde base", value=f"`{nuevos_sh:,}`", inline=True)
-    embed.add_field(name="Niveles ganados", value=f"`{niveles_ganados:,}`", inline=True)
-    embed.add_field(name="Nivel estimado", value=f"`{nivel_estimado:,}`", inline=True)
-    embed.set_footer(text=f"Base tomada desde: {base_date}")
-    await ctx.reply(embed=embed, mention_author=False)
 
 # ===============================
 # RANKINGS
@@ -560,12 +744,12 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
         ranking_text = "_Sin registros aún_"
         maximo = 0
     else:
-        maximo = int(datos[0][1] or 0)
+        maximo = int(datos[0]["s"] or 0)
         lines = []
 
-        for i, (user, total) in enumerate(datos, start=1):
-            total = int(total or 0)
-            user = cortar_nombre(user, 20)
+        for i, row in enumerate(datos, start=1):
+            user = cortar_nombre(row["username"], 20)
+            total = int(row["s"] or 0)
 
             if i == 1:
                 medalla = "🥇"
@@ -598,17 +782,19 @@ async def crear_embed_ranking(titulo, emoji, color, datos, footer, total_periodo
     embed = discord.Embed(
         title=f"{emoji} {titulo}",
         description=ranking_text,
-        color=color
+        color=color,
+        timestamp=utc_now()
     )
     embed.add_field(name="📊 RESUMEN", value=resumen, inline=False)
     embed.add_field(name="📦 TOTAL", value=f"`{format_number(total_periodo_shulkers)}` SHULKERS", inline=True)
     embed.add_field(name="⚖ EQUIVALENTE", value=f"`{pv}` PVS + `{resto}` SHULKERS", inline=True)
-    embed.set_footer(text=footer)
+    embed.set_footer(text=f"{footer} | Hora Chile")
     return embed
 
 async def total_periodo(where_sql: str, params: tuple) -> int:
-    cursor.execute(f"SELECT COALESCE(SUM(total), 0) FROM shulker WHERE {where_sql}", params)
-    return int(cursor.fetchone()[0] or 0)
+    cursor.execute(f"SELECT COALESCE(SUM(total), 0) AS total FROM shulker WHERE {where_sql}", params)
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
 
 async def actualizar_todos_los_ranking():
     try:
@@ -617,7 +803,7 @@ async def actualizar_todos_los_ranking():
             print("⚠️ No se encontró RANKING_CHANNEL_ID")
             return
 
-        hoy = date.today()
+        hoy = today_local()
         inicio_mes = clamp_start(hoy.replace(day=1))
         inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
 
@@ -679,8 +865,9 @@ async def actualizar_todos_los_ranking():
 # RANKINGS END APORTADA
 # ===============================
 async def total_periodo_end(where_sql: str, params: tuple) -> int:
-    cursor.execute(f"SELECT COALESCE(SUM(total), 0) FROM end_aportado WHERE {where_sql}", params)
-    return int(cursor.fetchone()[0] or 0)
+    cursor.execute(f"SELECT COALESCE(SUM(total), 0) AS total FROM end_aportado WHERE {where_sql}", params)
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
 
 async def actualizar_rankings_end():
     try:
@@ -689,7 +876,7 @@ async def actualizar_rankings_end():
             print("⚠️ No se encontró END_APORTE_RANKING_CHANNEL_ID")
             return
 
-        hoy = date.today()
+        hoy = today_local()
         inicio_mes = clamp_start(hoy.replace(day=1))
         inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
 
@@ -748,10 +935,93 @@ async def actualizar_rankings_end():
         print(f"❌ Error en actualizar_rankings_end: {e}")
 
 # ===============================
+# PUBLICACIÓN / REPARACIÓN
+# ===============================
+async def publicar_boton_shulker():
+    form_channel = bot.get_channel(FORM_CHANNEL_ID)
+    if form_channel:
+        msg = await obtener_mensaje_fijo(form_channel, "form_boton")
+        await msg.edit(
+            content=None,
+            embed=discord.Embed(
+                title="📦 Registro de Shulker",
+                description="Presiona el botón para registrar.",
+                color=discord.Color.green(),
+                timestamp=utc_now()
+            ),
+            view=ShulkerButton()
+        )
+        print("✅ Botón fijo shulker actualizado")
+
+async def publicar_boton_end_aportada():
+    end_aporte_form_channel = bot.get_channel(END_APORTE_FORM_CHANNEL_ID)
+    if end_aporte_form_channel:
+        msg = await obtener_mensaje_fijo(end_aporte_form_channel, "form_boton_end_aportada")
+        await msg.edit(
+            content=None,
+            embed=discord.Embed(
+                title="🪨 Registro de End Aportada",
+                description=(
+                    "Presiona el botón para registrar tu End aportada.\n\n"
+                    "📌 Flujo:\n"
+                    "1. Abres el formulario\n"
+                    "2. Escribes la cantidad\n"
+                    "3. Subes una imagen como evidencia\n"
+                    "4. El staff revisa\n"
+                    "5. Solo lo aprobado entra al top público"
+                ),
+                color=discord.Color.blurple(),
+                timestamp=utc_now()
+            ),
+            view=EndAportadoButton()
+        )
+        print("✅ Botón fijo END aportada actualizado")
+
+async def sincronizar_mensajes_revision():
+    try:
+        review_channel = bot.get_channel(END_APORTE_REVIEW_CHANNEL_ID)
+        if not review_channel:
+            print("⚠️ No se encontró canal de revisión para sincronizar")
+            return
+
+        cursor.execute("""
+            SELECT id, review_message_id
+            FROM end_requests
+            WHERE review_message_id IS NOT NULL
+        """)
+        rows = cursor.fetchall()
+
+        actualizados = 0
+
+        for row in rows:
+            request_id = row["id"]
+            review_message_id = row["review_message_id"]
+
+            request_row = get_request_by_id(request_id)
+            if not request_row:
+                continue
+
+            disabled = request_row["status"] != "pending"
+
+            try:
+                msg = await review_channel.fetch_message(review_message_id)
+                embed = construir_embed_revision(request_row)
+                await msg.edit(embed=embed, view=EndReviewView(disabled=disabled))
+                actualizados += 1
+            except Exception as e:
+                print(f"⚠️ No se pudo sincronizar revisión #{request_id}: {e}")
+
+        print(f"✅ Mensajes de revisión sincronizados: {actualizados}")
+    except Exception as e:
+        print(f"❌ Error en sincronizar_mensajes_revision: {e}")
+
+# ===============================
 # TASK
 # ===============================
 @tasks.loop(hours=1)
 async def ranking_automatico():
+    cleanup_expired_cooldowns()
+    cleanup_expired_pending_end()
     await actualizar_todos_los_ranking()
     await actualizar_panel_progreso()
     await actualizar_rankings_end()
@@ -765,10 +1035,9 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             user_id = interaction.user.id
-            ahora = time.time()
 
-            if user_id in cooldowns and ahora - cooldowns[user_id] < COOLDOWN_SECONDS:
-                restante = int(COOLDOWN_SECONDS - (ahora - cooldowns[user_id]))
+            restante = get_cooldown_remaining("shulker_normal", user_id)
+            if restante > 0:
                 await interaction.response.send_message(
                     f"⏳ Espera `{restante}` segundos antes de registrar otra vez.",
                     ephemeral=True
@@ -783,7 +1052,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
                 return
 
-            hoy = str(date.today())
+            hoy = local_date_str()
             username = interaction.user.display_name
 
             cursor.execute("""
@@ -796,14 +1065,14 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             """, (user_id, username, hoy, cantidad_int))
             db.commit()
 
-            cooldowns[user_id] = ahora
+            set_cooldown("shulker_normal", user_id, COOLDOWN_SECONDS)
 
             cursor.execute(
                 "SELECT total FROM shulker WHERE user_id = ? AND fecha = ?",
                 (user_id, hoy)
             )
             row = cursor.fetchone()
-            nuevo_total = int(row[0] or 0) if row else cantidad_int
+            nuevo_total = int(row["total"] or 0) if row else cantidad_int
 
             await actualizar_todos_los_ranking()
             await actualizar_panel_progreso()
@@ -817,7 +1086,8 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                         f"➕ Registró: `{cantidad_int}`\n"
                         f"📊 Total hoy: `{nuevo_total}`"
                     ),
-                    color=discord.Color.green()
+                    color=discord.Color.green(),
+                    timestamp=utc_now()
                 )
                 await end_channel.send(embed=embed)
 
@@ -855,20 +1125,19 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             user_id = interaction.user.id
-            ahora = time.time()
 
             pendiente = get_pending_end(user_id)
             if pendiente:
-                restante = int(max(1, END_UPLOAD_TIMEOUT_SECONDS - (ahora - pendiente["timestamp"])))
+                restante = get_pending_end_remaining_seconds(user_id)
                 await interaction.response.send_message(
                     f"⏳ Ya tienes un registro pendiente de evidencia. "
-                    f"Sube la imagen en este canal o espera `{restante}` segundos para que expire.",
+                    f"Sube la imagen en este canal o espera `{max(1, restante)}` segundos para que expire.",
                     ephemeral=True
                 )
                 return
 
-            if user_id in end_aporte_cooldowns and ahora - end_aporte_cooldowns[user_id] < COOLDOWN_SECONDS:
-                restante = int(COOLDOWN_SECONDS - (ahora - end_aporte_cooldowns[user_id]))
+            restante = get_cooldown_remaining("end_aportada", user_id)
+            if restante > 0:
                 await interaction.response.send_message(
                     f"⏳ Espera `{restante}` segundos antes de registrar otra aportación.",
                     ephemeral=True
@@ -886,15 +1155,15 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
                 )
                 return
 
-            end_upload_pending[user_id] = {
-                "cantidad": cantidad_int,
-                "timestamp": ahora,
-                "channel_id": interaction.channel.id if interaction.channel else 0,
-                "fecha": str(date.today()),
-                "username": interaction.user.display_name
-            }
+            save_pending_end(
+                user_id=user_id,
+                username=interaction.user.display_name,
+                fecha=local_date_str(),
+                cantidad=cantidad_int,
+                channel_id=interaction.channel.id if interaction.channel else 0
+            )
 
-            end_aporte_cooldowns[user_id] = ahora
+            set_cooldown("end_aportada", user_id, COOLDOWN_SECONDS)
 
             await interaction.response.send_message(
                 "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.\n"
@@ -913,6 +1182,114 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
                 )
 
 # ===============================
+# MODAL RECHAZO STAFF
+# ===============================
+class RejectReasonModal(discord.ui.Modal, title="Rechazar solicitud"):
+    reason = discord.ui.TextInput(
+        label="Motivo de rechazo",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=500,
+        placeholder="Escribe el motivo del rechazo..."
+    )
+
+    def __init__(self, review_message_id: int):
+        super().__init__()
+        self.review_message_id = review_message_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            if not isinstance(interaction.user, discord.Member):
+                await interaction.response.send_message("❌ No se pudo validar tu permiso.", ephemeral=True)
+                return
+
+            if not is_staff_member(interaction.user):
+                await interaction.response.send_message(
+                    "❌ Solo el staff puede rechazar solicitudes.",
+                    ephemeral=True
+                )
+                return
+
+            request_row = get_request_by_review_message_id(self.review_message_id)
+            if not request_row:
+                await interaction.response.send_message(
+                    "❌ No se encontró la solicitud asociada a este mensaje.",
+                    ephemeral=True
+                )
+                return
+
+            if request_row["status"] != "pending":
+                await interaction.response.send_message(
+                    f"⚠️ Esta solicitud ya fue revisada anteriormente (`{request_row['status']}`).",
+                    ephemeral=True
+                )
+                return
+
+            reviewed_at = local_datetime_str()
+            reviewed_by = interaction.user.id
+            motivo = str(self.reason.value).strip()
+
+            cursor.execute("""
+                UPDATE end_requests
+                SET status = 'rejected',
+                    rejection_reason = ?,
+                    reviewed_by = ?,
+                    reviewed_at = ?
+                WHERE id = ? AND status = 'pending'
+            """, (motivo, reviewed_by, reviewed_at, request_row["id"]))
+
+            if cursor.rowcount == 0:
+                db.commit()
+                await interaction.response.send_message(
+                    "⚠️ Esta solicitud ya no estaba pendiente.",
+                    ephemeral=True
+                )
+                return
+
+            db.commit()
+
+            updated_row = get_request_by_id(request_row["id"])
+            embed = construir_embed_revision(
+                updated_row,
+                reviewer_name=interaction.user.display_name
+            )
+
+            await interaction.response.edit_message(
+                embed=embed,
+                view=EndReviewView(disabled=True)
+            )
+
+            try:
+                usuario = await bot.fetch_user(request_row["user_id"])
+                await usuario.send(
+                    f"❌ Tu solicitud de **End aportada** por `{request_row['cantidad']}` shulkers fue **rechazada** por el staff.\n"
+                    f"📝 Motivo: {motivo}"
+                )
+            except Exception:
+                pass
+
+            await log_staff_action(
+                action="end_request_rejected",
+                request_id=request_row["id"],
+                target_user_id=request_row["user_id"],
+                target_username=request_row["username"],
+                actor_user_id=interaction.user.id,
+                actor_username=interaction.user.display_name,
+                amount=request_row["cantidad"],
+                reason=motivo
+            )
+
+            print(f"❌ Solicitud END #{request_row['id']} rechazada por {interaction.user}")
+
+        except Exception as e:
+            print(f"❌ Error en RejectReasonModal.on_submit: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Ocurrió un error al rechazar la solicitud.",
+                    ephemeral=True
+                )
+
+# ===============================
 # BOTÓN SHULKER NORMAL
 # ===============================
 class ShulkerButton(discord.ui.View):
@@ -923,7 +1300,7 @@ class ShulkerButton(discord.ui.View):
         label="Registrar Shulker",
         style=discord.ButtonStyle.green,
         emoji="📦",
-        custom_id="registrar_shulker_btn_v1"
+        custom_id="registrar_shulker_btn_v2"
     )
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -948,7 +1325,7 @@ class EndAportadoButton(discord.ui.View):
         label="Registrar End Aportada",
         style=discord.ButtonStyle.blurple,
         emoji="🪨",
-        custom_id="registrar_end_aportada_btn_v1"
+        custom_id="registrar_end_aportada_btn_v2"
     )
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -975,21 +1352,18 @@ class EndReviewView(discord.ui.View):
         label="Aprobar",
         style=discord.ButtonStyle.green,
         emoji="✅",
-        custom_id="end_review_approve_v1"
+        custom_id="end_review_approve_v2"
     )
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_review(interaction, approve=True)
+        await self.handle_approve(interaction)
 
     @discord.ui.button(
         label="Rechazar",
         style=discord.ButtonStyle.red,
         emoji="❌",
-        custom_id="end_review_reject_v1"
+        custom_id="end_review_reject_v2"
     )
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_review(interaction, approve=False)
-
-    async def handle_review(self, interaction: discord.Interaction, approve: bool):
         try:
             if not isinstance(interaction.user, discord.Member):
                 await interaction.response.send_message("❌ No se pudo validar tu permiso.", ephemeral=True)
@@ -997,7 +1371,7 @@ class EndReviewView(discord.ui.View):
 
             if not is_staff_member(interaction.user):
                 await interaction.response.send_message(
-                    "❌ Solo el staff puede aprobar o rechazar solicitudes.",
+                    "❌ Solo el staff puede rechazar solicitudes.",
                     ephemeral=True
                 )
                 return
@@ -1010,8 +1384,45 @@ class EndReviewView(discord.ui.View):
                 )
                 return
 
-            request_id = request_row[0]
-            status_actual = request_row[6]
+            if request_row["status"] != "pending":
+                await interaction.response.send_message(
+                    f"⚠️ Esta solicitud ya fue revisada anteriormente (`{request_row['status']}`).",
+                    ephemeral=True
+                )
+                return
+
+            await interaction.response.send_modal(RejectReasonModal(interaction.message.id))
+        except Exception as e:
+            print(f"❌ Error al abrir modal de rechazo: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ No se pudo abrir el formulario de rechazo.",
+                    ephemeral=True
+                )
+
+    async def handle_approve(self, interaction: discord.Interaction):
+        try:
+            if not isinstance(interaction.user, discord.Member):
+                await interaction.response.send_message("❌ No se pudo validar tu permiso.", ephemeral=True)
+                return
+
+            if not is_staff_member(interaction.user):
+                await interaction.response.send_message(
+                    "❌ Solo el staff puede aprobar solicitudes.",
+                    ephemeral=True
+                )
+                return
+
+            request_row = get_request_by_review_message_id(interaction.message.id)
+            if not request_row:
+                await interaction.response.send_message(
+                    "❌ No se encontró la solicitud asociada a este mensaje.",
+                    ephemeral=True
+                )
+                return
+
+            request_id = request_row["id"]
+            status_actual = request_row["status"]
 
             if status_actual != "pending":
                 await interaction.response.send_message(
@@ -1020,204 +1431,294 @@ class EndReviewView(discord.ui.View):
                 )
                 return
 
-            reviewed_at = now_str()
+            reviewed_at = local_datetime_str()
             reviewed_by = interaction.user.id
 
-            if approve:
-                cursor.execute("""
-                    UPDATE end_requests
-                    SET status = 'approved',
-                        reviewed_by = ?,
-                        reviewed_at = ?
-                    WHERE id = ? AND status = 'pending'
-                """, (reviewed_by, reviewed_at, request_id))
+            cursor.execute("""
+                UPDATE end_requests
+                SET status = 'approved',
+                    rejection_reason = NULL,
+                    reviewed_by = ?,
+                    reviewed_at = ?
+                WHERE id = ? AND status = 'pending'
+            """, (reviewed_by, reviewed_at, request_id))
 
-                if cursor.rowcount == 0:
-                    db.commit()
-                    await interaction.response.send_message(
-                        "⚠️ Esta solicitud ya no estaba pendiente.",
-                        ephemeral=True
-                    )
-                    return
-
-                user_id = request_row[1]
-                username = request_row[2]
-                fecha_registro = request_row[3]
-                cantidad = request_row[4]
-
-                cursor.execute("""
-                    INSERT INTO end_aportado (user_id, username, fecha, total)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(user_id, fecha)
-                    DO UPDATE SET
-                        total = total + excluded.total,
-                        username = excluded.username
-                """, (user_id, username, fecha_registro, cantidad))
-
+            if cursor.rowcount == 0:
                 db.commit()
-
-                updated_row = get_request_by_id(request_id)
-                embed = construir_embed_revision(
-                    updated_row,
-                    estado_override="approved",
-                    reviewer_name=interaction.user.display_name
+                await interaction.response.send_message(
+                    "⚠️ Esta solicitud ya no estaba pendiente.",
+                    ephemeral=True
                 )
+                return
 
-                await interaction.response.edit_message(
-                    embed=embed,
-                    view=EndReviewView(disabled=True)
+            cursor.execute("""
+                INSERT INTO end_aportado (user_id, username, fecha, total)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, fecha)
+                DO UPDATE SET
+                    total = total + excluded.total,
+                    username = excluded.username
+            """, (
+                request_row["user_id"],
+                request_row["username"],
+                request_row["fecha"],
+                request_row["cantidad"]
+            ))
+
+            db.commit()
+
+            updated_row = get_request_by_id(request_id)
+            embed = construir_embed_revision(
+                updated_row,
+                reviewer_name=interaction.user.display_name
+            )
+
+            await interaction.response.edit_message(
+                embed=embed,
+                view=EndReviewView(disabled=True)
+            )
+
+            try:
+                usuario = await bot.fetch_user(request_row["user_id"])
+                await usuario.send(
+                    f"✅ Tu solicitud de **End aportada** por `{request_row['cantidad']}` shulkers fue **aprobada**."
                 )
+            except Exception:
+                pass
 
-                try:
-                    usuario = await bot.fetch_user(user_id)
-                    await usuario.send(
-                        f"✅ Tu solicitud de **End aportada** por `{cantidad}` shulkers fue **aprobada**."
-                    )
-                except Exception:
-                    pass
+            await log_staff_action(
+                action="end_request_approved",
+                request_id=request_id,
+                target_user_id=request_row["user_id"],
+                target_username=request_row["username"],
+                actor_user_id=interaction.user.id,
+                actor_username=interaction.user.display_name,
+                amount=request_row["cantidad"],
+                reason=None
+            )
 
-                await actualizar_rankings_end()
-                print(f"✅ Solicitud END #{request_id} aprobada por {interaction.user}")
-
-            else:
-                cursor.execute("""
-                    UPDATE end_requests
-                    SET status = 'rejected',
-                        reviewed_by = ?,
-                        reviewed_at = ?
-                    WHERE id = ? AND status = 'pending'
-                """, (reviewed_by, reviewed_at, request_id))
-
-                if cursor.rowcount == 0:
-                    db.commit()
-                    await interaction.response.send_message(
-                        "⚠️ Esta solicitud ya no estaba pendiente.",
-                        ephemeral=True
-                    )
-                    return
-
-                db.commit()
-
-                updated_row = get_request_by_id(request_id)
-                embed = construir_embed_revision(
-                    updated_row,
-                    estado_override="rejected",
-                    reviewer_name=interaction.user.display_name
-                )
-
-                await interaction.response.edit_message(
-                    embed=embed,
-                    view=EndReviewView(disabled=True)
-                )
-
-                user_id = request_row[1]
-                cantidad = request_row[4]
-
-                try:
-                    usuario = await bot.fetch_user(user_id)
-                    await usuario.send(
-                        f"❌ Tu solicitud de **End aportada** por `{cantidad}` shulkers fue **rechazada** por el staff."
-                    )
-                except Exception:
-                    pass
-
-                print(f"❌ Solicitud END #{request_id} rechazada por {interaction.user}")
+            await actualizar_rankings_end()
+            print(f"✅ Solicitud END #{request_id} aprobada por {interaction.user}")
 
         except Exception as e:
-            print(f"❌ Error en EndReviewView.handle_review: {e}")
+            print(f"❌ Error en EndReviewView.handle_approve: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ Ocurrió un error al revisar la solicitud.",
+                    "❌ Ocurrió un error al aprobar la solicitud.",
                     ephemeral=True
                 )
 
 # ===============================
 # CAPTURA DE IMAGEN PARA END APORTADA
 # ===============================
+async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
+    try:
+        pendiente = get_pending_end(message.author.id)
+        if not pendiente:
+            return False
+
+        # Si el usuario escribe un comando y no adjunta imagen, no interceptar
+        if message.content.startswith("!") and not message.attachments:
+            return False
+
+        canal_esperado = int(pendiente["channel_id"])
+
+        # Exigir el mismo canal
+        if canal_esperado and message.channel.id != canal_esperado:
+            return False
+
+        # Si no adjunta nada, recordar
+        if not message.attachments:
+            await message.reply(
+                "📸 Aún estoy esperando tu **imagen de evidencia** para completar el registro de End aportada."
+            )
+            return True
+
+        # Buscar la primera imagen válida
+        imagen = None
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image"):
+                imagen = attachment
+                break
+
+        if not imagen:
+            await message.reply("❌ Debes subir **una imagen válida** como evidencia.")
+            return True
+
+        review_channel = bot.get_channel(END_APORTE_REVIEW_CHANNEL_ID)
+        if not review_channel:
+            await message.reply("❌ No se encontró el canal privado de revisión del staff.")
+            return True
+
+        cursor.execute("""
+            INSERT INTO end_requests (
+                user_id, username, fecha, cantidad, image_url, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        """, (
+            message.author.id,
+            pendiente["username"],
+            pendiente["fecha"],
+            pendiente["cantidad"],
+            imagen.url,
+            local_datetime_str()
+        ))
+        db.commit()
+
+        request_id = cursor.lastrowid
+        request_row = get_request_by_id(request_id)
+
+        embed = construir_embed_revision(request_row)
+        review_msg = await review_channel.send(embed=embed, view=EndReviewView())
+
+        cursor.execute("""
+            UPDATE end_requests
+            SET review_message_id = ?
+            WHERE id = ?
+        """, (review_msg.id, request_id))
+        db.commit()
+
+        clear_pending_end(message.author.id)
+
+        await message.reply(
+            f"✅ Tu evidencia fue enviada al **staff** para revisión.\n"
+            f"🆔 Solicitud: `#{request_id}`\n"
+            "⏳ Cuando sea aprobada, aparecerá en el top público."
+        )
+
+        await log_staff_action(
+            action="end_request_created",
+            request_id=request_id,
+            target_user_id=message.author.id,
+            target_username=pendiente["username"],
+            actor_user_id=message.author.id,
+            actor_username=pendiente["username"],
+            amount=pendiente["cantidad"],
+            reason=None
+        )
+
+        print(f"✅ Solicitud END #{request_id} creada por {message.author}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error en manejar_subida_pendiente_end: {e}")
+        return False
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    try:
-        pendiente = get_pending_end(message.author.id)
-
-        if pendiente:
-            # Expirado
-            if not pendiente:
-                await bot.process_commands(message)
-                return
-
-            # Exigir el mismo canal donde abrió el modal
-            canal_esperado = pendiente["channel_id"]
-            if canal_esperado and message.channel.id != canal_esperado:
-                await bot.process_commands(message)
-                return
-
-            # Si escribió texto sin imagen en el canal correcto, recordatorio
-            if not message.attachments:
-                if message.channel.id == canal_esperado:
-                    await message.reply(
-                        "📸 Aún estoy esperando tu **imagen de evidencia** para completar el registro de End aportada."
-                    )
-                await bot.process_commands(message)
-                return
-
-            attachment = message.attachments[0]
-
-            if not attachment.content_type or not attachment.content_type.startswith("image"):
-                await message.reply("❌ Debes subir **una imagen válida** como evidencia.")
-                await bot.process_commands(message)
-                return
-
-            cantidad = pendiente["cantidad"]
-            fecha_registro = pendiente["fecha"]
-            username = pendiente["username"]
-            user_id = message.author.id
-
-            review_channel = bot.get_channel(END_APORTE_REVIEW_CHANNEL_ID)
-            if not review_channel:
-                await message.reply("❌ No se encontró el canal privado de revisión del staff.")
-                await bot.process_commands(message)
-                return
-
-            created_at = now_str()
-
-            cursor.execute("""
-                INSERT INTO end_requests (
-                    user_id, username, fecha, cantidad, image_url, status, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, 'pending', ?)
-            """, (user_id, username, fecha_registro, cantidad, attachment.url, created_at))
-            db.commit()
-
-            request_id = cursor.lastrowid
-            request_row = get_request_by_id(request_id)
-
-            embed = construir_embed_revision(request_row)
-            review_msg = await review_channel.send(embed=embed, view=EndReviewView())
-
-            cursor.execute("""
-                UPDATE end_requests
-                SET review_message_id = ?
-                WHERE id = ?
-            """, (review_msg.id, request_id))
-            db.commit()
-
-            limpiar_pendiente_end(user_id)
-
-            await message.reply(
-                f"✅ Tu evidencia fue enviada al **staff** para revisión.\n"
-                f"🆔 Solicitud: `#{request_id}`\n"
-                "⏳ Cuando sea aprobada, aparecerá en el top público."
-            )
-
-            print(f"✅ Solicitud END #{request_id} creada por {message.author}")
-
-    except Exception as e:
-        print(f"❌ Error en on_message: {e}")
+    consumido = await manejar_subida_pendiente_end(message)
+    if consumido:
+        return
 
     await bot.process_commands(message)
+
+# ===============================
+# COMANDOS
+# ===============================
+@bot.command(name="setnivel")
+@commands.has_permissions(administrator=True)
+async def setnivel(ctx, nivel: int):
+    set_progress_value("base_level", str(nivel))
+    set_progress_value("base_shulkers", str(total_shulkers_all_time()))
+    set_progress_value("base_date", local_date_str())
+    await ctx.reply(
+        f"✅ Nivel base fijado en `{nivel:,}` y progreso recalibrado.",
+        mention_author=False
+    )
+    await actualizar_panel_progreso()
+
+@bot.command(name="estadoisla")
+@commands.has_permissions(administrator=True)
+async def estadoisla(ctx):
+    base_level = int(get_progress_value("base_level", "0") or 0)
+    base_shulkers = int(get_progress_value("base_shulkers", "0") or 0)
+    base_date = get_progress_value("base_date", "sin fecha")
+
+    total_sh = total_shulkers_all_time()
+    nuevos_sh = max(0, total_sh - base_shulkers)
+    niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
+    nivel_estimado = base_level + niveles_ganados
+
+    embed = discord.Embed(
+        title="📊 Estado actual de la isla",
+        color=discord.Color.blurple(),
+        timestamp=utc_now()
+    )
+    embed.add_field(name="Base nivel", value=f"`{base_level:,}`", inline=False)
+    embed.add_field(name="Base shulkers", value=f"`{base_shulkers:,}`", inline=True)
+    embed.add_field(name="Shulkers totales", value=f"`{total_sh:,}`", inline=True)
+    embed.add_field(name="Shulkers desde base", value=f"`{nuevos_sh:,}`", inline=True)
+    embed.add_field(name="Niveles ganados", value=f"`{niveles_ganados:,}`", inline=True)
+    embed.add_field(name="Nivel estimado", value=f"`{nivel_estimado:,}`", inline=True)
+    embed.set_footer(text=f"Base tomada desde: {base_date} | Hora Chile")
+    await ctx.reply(embed=embed, mention_author=False)
+
+@bot.command(name="publicarbotones")
+@commands.has_permissions(administrator=True)
+async def publicarbotones(ctx):
+    await publicar_boton_shulker()
+    await publicar_boton_end_aportada()
+    await ctx.reply("✅ Botones republicados correctamente.", mention_author=False)
+
+@bot.command(name="publicarrankings")
+@commands.has_permissions(administrator=True)
+async def publicarrankings(ctx):
+    await actualizar_todos_los_ranking()
+    await actualizar_rankings_end()
+    await ctx.reply("✅ Rankings republicados/actualizados correctamente.", mention_author=False)
+
+@bot.command(name="publicarpanel")
+@commands.has_permissions(administrator=True)
+async def publicarpanel(ctx):
+    await actualizar_panel_progreso()
+    await ctx.reply("✅ Panel republicado/actualizado correctamente.", mention_author=False)
+
+@bot.command(name="sincronizarrevision")
+@commands.has_permissions(administrator=True)
+async def sincronizarrevision(ctx):
+    await sincronizar_mensajes_revision()
+    await ctx.reply("✅ Mensajes de revisión sincronizados.", mention_author=False)
+
+@bot.command(name="stafflogs")
+@commands.has_permissions(administrator=True)
+async def stafflogs(ctx, limite: int = 10):
+    limite = max(1, min(limite, 20))
+
+    cursor.execute("""
+        SELECT action, request_id, target_username, actor_username, amount, reason, created_at
+        FROM staff_logs
+        ORDER BY id DESC
+        LIMIT ?
+    """, (limite,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        await ctx.reply("ℹ️ No hay logs de staff aún.", mention_author=False)
+        return
+
+    lines = []
+    for r in rows:
+        texto = (
+            f"• `{r['created_at']}` | `{r['action']}`"
+            f" | req `#{r['request_id'] or '-'}'"
+            f" | usuario `{r['target_username'] or '-'}'"
+            f" | staff `{r['actor_username'] or '-'}'"
+            f" | cant `{r['amount'] if r['amount'] is not None else '-'}'"
+        )
+        if r["reason"]:
+            texto += f"\n  motivo: {r['reason'][:120]}"
+        lines.append(texto)
+
+    embed = discord.Embed(
+        title="🛡 Últimos logs de staff",
+        description="\n".join(lines),
+        color=discord.Color.dark_gold(),
+        timestamp=utc_now()
+    )
+    await ctx.reply(embed=embed, mention_author=False)
 
 # ===============================
 # READY
@@ -1227,61 +1728,41 @@ async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
     print(f"📂 DB: {DB_PATH}")
     print(f"📌 Start date: {BOT_START_DATE}")
+    print(f"🕒 Hora Chile: {local_datetime_str()}")
     print(f"✅ LEVELS_PER_SHULKER: {LEVELS_PER_SHULKER} | LEVELS_PER_PV: {LEVELS_PER_PV}")
     print("✅ BOT VERSION NUEVA CARGADA")
 
+    cleanup_expired_cooldowns()
+    cleanup_expired_pending_end()
     asegurar_base_progreso_si_falta()
 
     if not ranking_automatico.is_running():
         ranking_automatico.start()
 
-    # Botón fijo shulker normal
-    form_channel = bot.get_channel(FORM_CHANNEL_ID)
-    if form_channel:
-        msg = await obtener_mensaje_fijo(form_channel, "form_boton")
-        await msg.edit(
-            content=None,
-            embed=discord.Embed(
-                title="📦 Registro de Shulker",
-                description="Presiona el botón para registrar.",
-                color=discord.Color.green()
-            ),
-            view=ShulkerButton()
-        )
-        print("✅ Botón fijo shulker actualizado")
-
-    # Botón fijo END aportada
-    end_aporte_form_channel = bot.get_channel(END_APORTE_FORM_CHANNEL_ID)
-    if end_aporte_form_channel:
-        msg = await obtener_mensaje_fijo(end_aporte_form_channel, "form_boton_end_aportada")
-        await msg.edit(
-            content=None,
-            embed=discord.Embed(
-                title="🪨 Registro de End Aportada",
-                description=(
-                    "Presiona el botón para registrar tu End aportada.\n\n"
-                    "📌 Flujo:\n"
-                    "1. Abres el formulario\n"
-                    "2. Escribes la cantidad\n"
-                    "3. Subes una imagen como evidencia\n"
-                    "4. El staff revisa\n"
-                    "5. Solo lo aprobado entra al top público"
-                ),
-                color=discord.Color.blurple()
-            ),
-            view=EndAportadoButton()
-        )
-        print("✅ Botón fijo END aportada actualizado")
-
+    await publicar_boton_shulker()
+    await publicar_boton_end_aportada()
     await actualizar_todos_los_ranking()
     await actualizar_panel_progreso()
     await actualizar_rankings_end()
+    await sincronizar_mensajes_revision()
 
 # ===============================
 # ERROR GLOBAL
 # ===============================
 @bot.event
 async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("❌ No tienes permisos para usar este comando.", mention_author=False)
+        return
+
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply("❌ Faltan argumentos para ese comando.", mention_author=False)
+        return
+
+    if isinstance(error, commands.BadArgument):
+        await ctx.reply("❌ Argumento inválido.", mention_author=False)
+        return
+
     print(f"❌ Error de comando: {error}")
 
 # ===============================

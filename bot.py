@@ -1,4 +1,5 @@
 import os
+import io
 import sqlite3
 import discord
 import shutil
@@ -22,13 +23,14 @@ END_APORTE_RANKING_CHANNEL_ID = 1482278329871503461
 END_APORTE_REVIEW_CHANNEL_ID = 1482278518552530955
 
 # Canal opcional para logs del staff
-# Pon 0 si no quieres usar canal de logs
-STAFF_LOG_CHANNEL_ID = 1462316363552133202
+# Pon 0 si no quieres usarlo
+STAFF_LOG_CHANNEL_ID = 0
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
 END_UPLOAD_TIMEOUT_SECONDS = 120
+PUBLIC_EVIDENCE_DELETE_SECONDS = 60
 
 TARGET_TOP1_LEVEL = 105_000_000
 TARGET_TOP3_LEVEL = 80_000_000
@@ -38,6 +40,7 @@ DAILY_SHULKER_GOAL = 120
 # ZONA HORARIA
 # ===============================
 CHILE_TZ = ZoneInfo("America/Santiago")
+UTC_TZ = ZoneInfo("UTC")
 
 # ===============================
 # CONVERSIÓN EXACTA SEGÚN TU SERVER
@@ -400,7 +403,7 @@ def cleanup_expired_cooldowns():
 
 def set_cooldown(feature: str, user_id: int, seconds: int):
     expires_at = (utc_now().timestamp() + seconds)
-    expires_iso = datetime.fromtimestamp(expires_at, tz=ZoneInfo("UTC")).isoformat()
+    expires_iso = datetime.fromtimestamp(expires_at, tz=UTC_TZ).isoformat()
     cursor.execute("""
         INSERT OR REPLACE INTO user_cooldowns (feature, user_id, expires_at)
         VALUES (?, ?, ?)
@@ -446,7 +449,7 @@ def save_pending_end(user_id: int, username: str, fecha: str, cantidad: int, cha
     now = utc_now()
     expires = datetime.fromtimestamp(
         now.timestamp() + END_UPLOAD_TIMEOUT_SECONDS,
-        tz=ZoneInfo("UTC")
+        tz=UTC_TZ
     )
 
     cursor.execute("""
@@ -1517,24 +1520,21 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
         if not pendiente:
             return False
 
-        # Si el usuario escribe un comando y no adjunta imagen, no interceptar
         if message.content.startswith("!") and not message.attachments:
             return False
 
         canal_esperado = int(pendiente["channel_id"])
 
-        # Exigir el mismo canal
         if canal_esperado and message.channel.id != canal_esperado:
             return False
 
-        # Si no adjunta nada, recordar
         if not message.attachments:
             await message.reply(
-                "📸 Aún estoy esperando tu **imagen de evidencia** para completar el registro de End aportada."
+                "📸 Aún estoy esperando tu **imagen de evidencia** para completar el registro de End aportada.",
+                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
             )
             return True
 
-        # Buscar la primera imagen válida
         imagen = None
         for attachment in message.attachments:
             if attachment.content_type and attachment.content_type.startswith("image"):
@@ -1542,13 +1542,47 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
                 break
 
         if not imagen:
-            await message.reply("❌ Debes subir **una imagen válida** como evidencia.")
+            await message.reply(
+                "❌ Debes subir **una imagen válida** como evidencia.",
+                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            )
             return True
 
         review_channel = bot.get_channel(END_APORTE_REVIEW_CHANNEL_ID)
         if not review_channel:
-            await message.reply("❌ No se encontró el canal privado de revisión del staff.")
+            await message.reply(
+                "❌ No se encontró el canal privado de revisión del staff.",
+                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            )
             return True
+
+        file_bytes = await imagen.read()
+        discord_file = discord.File(
+            fp=io.BytesIO(file_bytes),
+            filename=imagen.filename or "evidencia.png"
+        )
+
+        temp_embed = discord.Embed(
+            title="🪨 Evidencia recibida",
+            description="Archivo reenviado para revisión interna.",
+            color=discord.Color.orange(),
+            timestamp=utc_now()
+        )
+
+        staff_evidence_msg = await review_channel.send(
+            content=f"📥 Evidencia enviada por <@{message.author.id}>",
+            file=discord_file,
+            embed=temp_embed
+        )
+
+        if not staff_evidence_msg.attachments:
+            await message.reply(
+                "❌ No se pudo reenviar la imagen al canal de staff.",
+                delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
+            )
+            return True
+
+        staff_image_url = staff_evidence_msg.attachments[0].url
 
         cursor.execute("""
             INSERT INTO end_requests (
@@ -1560,7 +1594,7 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
             pendiente["username"],
             pendiente["fecha"],
             pendiente["cantidad"],
-            imagen.url,
+            staff_image_url,
             local_datetime_str()
         ))
         db.commit()
@@ -1569,7 +1603,11 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
         request_row = get_request_by_id(request_id)
 
         embed = construir_embed_revision(request_row)
-        review_msg = await review_channel.send(embed=embed, view=EndReviewView())
+
+        review_msg = await review_channel.send(
+            embed=embed,
+            view=EndReviewView()
+        )
 
         cursor.execute("""
             UPDATE end_requests
@@ -1583,8 +1621,25 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
         await message.reply(
             f"✅ Tu evidencia fue enviada al **staff** para revisión.\n"
             f"🆔 Solicitud: `#{request_id}`\n"
-            "⏳ Cuando sea aprobada, aparecerá en el top público."
+            f"⏳ Este mensaje y tu imagen se borrarán en {PUBLIC_EVIDENCE_DELETE_SECONDS} segundos.",
+            delete_after=PUBLIC_EVIDENCE_DELETE_SECONDS
         )
+
+        try:
+            await message.author.send(
+                f"✅ Tu solicitud de **End aportada** fue registrada correctamente.\n"
+                f"🆔 Solicitud: `#{request_id}`\n"
+                f"📦 Cantidad: `{pendiente['cantidad']}` shulkers\n"
+                f"📅 Fecha: `{pendiente['fecha']}`\n"
+                "⏳ Ahora está pendiente de revisión del staff."
+            )
+        except Exception:
+            pass
+
+        try:
+            await message.delete(delay=PUBLIC_EVIDENCE_DELETE_SECONDS)
+        except Exception:
+            pass
 
         await log_staff_action(
             action="end_request_created",

@@ -1039,7 +1039,8 @@ async def actualizar_todos_los_ranking():
 
         hoy = today_local()
         inicio_mes = clamp_start(hoy.replace(day=1))
-        inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_semana_natural = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_semana = max(inicio_semana_natural, inicio_mes)
         inicio_mes_pasado, inicio_mes_actual, fin_mes_pasado = obtener_rango_mes_pasado()
 
         cursor.execute("""
@@ -1156,7 +1157,8 @@ async def actualizar_rankings_end():
 
         hoy = today_local()
         inicio_mes = clamp_start(hoy.replace(day=1))
-        inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_semana_natural = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_semana = max(inicio_semana_natural, inicio_mes)
         inicio_mes_pasado, inicio_mes_actual, fin_mes_pasado = obtener_rango_mes_pasado()
 
         cursor.execute("""

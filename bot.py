@@ -843,6 +843,29 @@ async def total_periodo(where_sql: str, params: tuple) -> int:
     row = cursor.fetchone()
     return int(row["total"] or 0)
 
+async def total_periodo_rango(tabla: str, desde: str, hasta: str) -> int:
+    cursor.execute(
+        f"SELECT COALESCE(SUM(total), 0) AS total FROM {tabla} WHERE fecha >= ? AND fecha < ?",
+        (desde, hasta)
+    )
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+def obtener_rango_mes_pasado() -> tuple[date, date, date]:
+    hoy = today_local()
+    inicio_mes_actual = hoy.replace(day=1)
+    fin_mes_pasado = inicio_mes_actual - timedelta(days=1)
+    inicio_mes_pasado = fin_mes_pasado.replace(day=1)
+
+    if inicio_mes_actual < BOT_START_DATE:
+        inicio_mes_actual = BOT_START_DATE
+    if inicio_mes_pasado < BOT_START_DATE:
+        inicio_mes_pasado = BOT_START_DATE
+    if fin_mes_pasado < BOT_START_DATE:
+        fin_mes_pasado = BOT_START_DATE
+
+    return inicio_mes_pasado, inicio_mes_actual, fin_mes_pasado
+
 async def actualizar_todos_los_ranking():
     try:
         channel = bot.get_channel(RANKING_CHANNEL_ID)
@@ -853,6 +876,7 @@ async def actualizar_todos_los_ranking():
         hoy = today_local()
         inicio_mes = clamp_start(hoy.replace(day=1))
         inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_mes_pasado, inicio_mes_actual, fin_mes_pasado = obtener_rango_mes_pasado()
 
         cursor.execute("""
             SELECT username, SUM(total) as s
@@ -887,6 +911,21 @@ async def actualizar_todos_los_ranking():
         diario = cursor.fetchall()
         total_diario = await total_periodo("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
 
+        cursor.execute("""
+            SELECT username, SUM(total) as s
+            FROM shulker
+            WHERE fecha >= ? AND fecha < ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            LIMIT 5
+        """, (str(inicio_mes_pasado), str(inicio_mes_actual)))
+        mensual_pasado = cursor.fetchall()
+        total_mensual_pasado = await total_periodo_rango(
+            "shulker",
+            str(inicio_mes_pasado),
+            str(inicio_mes_actual)
+        )
+
         embed_mensual = await crear_embed_ranking(
             "TOP MENSUAL", "👑", discord.Color.purple(), mensual, "Mes actual", total_mensual
         )
@@ -896,14 +935,24 @@ async def actualizar_todos_los_ranking():
         embed_diario = await crear_embed_ranking(
             "TOP DIARIO", "⚡", discord.Color.gold(), diario, f"Hoy • {hoy}", total_diario
         )
+        embed_mes_pasado = await crear_embed_ranking(
+            "TOP MES PASADO",
+            "🏆",
+            discord.Color.orange(),
+            mensual_pasado,
+            f"{inicio_mes_pasado} a {fin_mes_pasado}",
+            total_mensual_pasado
+        )
 
         msg_mensual = await obtener_mensaje_fijo(channel, "ranking_mensual")
         msg_semanal = await obtener_mensaje_fijo(channel, "ranking_semanal")
         msg_diario = await obtener_mensaje_fijo(channel, "ranking_diario")
+        msg_mes_pasado = await obtener_mensaje_fijo(channel, "ranking_mes_pasado")
 
         await msg_mensual.edit(content=None, embed=embed_mensual)
         await msg_semanal.edit(content=None, embed=embed_semanal)
         await msg_diario.edit(content=None, embed=embed_diario)
+        await msg_mes_pasado.edit(content=None, embed=embed_mes_pasado)
         print("✅ Rankings shulker actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_todos_los_ranking: {e}")
@@ -926,6 +975,7 @@ async def actualizar_rankings_end():
         hoy = today_local()
         inicio_mes = clamp_start(hoy.replace(day=1))
         inicio_semana = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_mes_pasado, inicio_mes_actual, fin_mes_pasado = obtener_rango_mes_pasado()
 
         cursor.execute("""
             SELECT username, SUM(total) as s
@@ -960,6 +1010,21 @@ async def actualizar_rankings_end():
         diario = cursor.fetchall()
         total_diario = await total_periodo_end("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
 
+        cursor.execute("""
+            SELECT username, SUM(total) as s
+            FROM end_aportado
+            WHERE fecha >= ? AND fecha < ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            LIMIT 5
+        """, (str(inicio_mes_pasado), str(inicio_mes_actual)))
+        mensual_pasado = cursor.fetchall()
+        total_mensual_pasado = await total_periodo_rango(
+            "end_aportado",
+            str(inicio_mes_pasado),
+            str(inicio_mes_actual)
+        )
+
         embed_mensual = await crear_embed_ranking(
             "END APORTADA • TOP MENSUAL",
             "🪨",
@@ -990,14 +1055,26 @@ async def actualizar_rankings_end():
             mostrar_equivalencias=False,
             unidad="end aportada"
         )
+        embed_mes_pasado = await crear_embed_ranking(
+            "END APORTADA • TOP MES PASADO",
+            "🏆",
+            discord.Color.orange(),
+            mensual_pasado,
+            f"{inicio_mes_pasado} a {fin_mes_pasado}",
+            total_mensual_pasado,
+            mostrar_equivalencias=False,
+            unidad="end aportada"
+        )
 
         msg_mensual = await obtener_mensaje_fijo(channel, "ranking_end_aportada_mensual")
         msg_semanal = await obtener_mensaje_fijo(channel, "ranking_end_aportada_semanal")
         msg_diario = await obtener_mensaje_fijo(channel, "ranking_end_aportada_diario")
+        msg_mes_pasado = await obtener_mensaje_fijo(channel, "ranking_end_aportada_mes_pasado")
 
         await msg_mensual.edit(content=None, embed=embed_mensual)
         await msg_semanal.edit(content=None, embed=embed_semanal)
         await msg_diario.edit(content=None, embed=embed_diario)
+        await msg_mes_pasado.edit(content=None, embed=embed_mes_pasado)
         print("✅ Rankings END APORTADA actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_rankings_end: {e}")

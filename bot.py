@@ -1052,24 +1052,26 @@ async def actualizar_todos_los_ranking():
         embed_diario = await crear_embed_ranking(
             "TOP DIARIO", "⚡", discord.Color.gold(), diario, f"Hoy • {hoy}", total_diario
         )
-        embed_mes_pasado = await crear_embed_ranking(
-            "TOP MES PASADO",
-            "🏆",
+        embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
+            "LEYENDAS DEL MES PASADO",
+            "👾",
             discord.Color.orange(),
             mensual_pasado,
             f"{inicio_mes_pasado} a {fin_mes_pasado}",
             total_mensual_pasado
         )
 
-        msg_mensual = await obtener_mensaje_fijo(channel, "ranking_mensual")
-        msg_semanal = await obtener_mensaje_fijo(channel, "ranking_semanal")
-        msg_diario = await obtener_mensaje_fijo(channel, "ranking_diario")
-        msg_mes_pasado = await obtener_mensaje_fijo(channel, "ranking_mes_pasado")
+        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+            "ranking_mes_pasado",
+            "ranking_mensual",
+            "ranking_semanal",
+            "ranking_diario",
+        ])
 
-        await msg_mensual.edit(content=None, embed=embed_mensual)
-        await msg_semanal.edit(content=None, embed=embed_semanal)
-        await msg_diario.edit(content=None, embed=embed_diario)
-        await msg_mes_pasado.edit(content=None, embed=embed_mes_pasado)
+        await mensajes["ranking_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
+        await mensajes["ranking_mensual"].edit(content=None, embed=embed_mensual)
+        await mensajes["ranking_semanal"].edit(content=None, embed=embed_semanal)
+        await mensajes["ranking_diario"].edit(content=None, embed=embed_diario)
         print("✅ Rankings shulker actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_todos_los_ranking: {e}")
@@ -1172,10 +1174,10 @@ async def actualizar_rankings_end():
             mostrar_equivalencias=False,
             unidad="end aportada"
         )
-        embed_mes_pasado = await crear_embed_ranking(
-            "END APORTADA • TOP MES PASADO",
-            "🏆",
-            discord.Color.orange(),
+        embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
+            "END APORTADA • HÉROES DEL MES PASADO",
+            "🪨",
+            discord.Color.dark_orange(),
             mensual_pasado,
             f"{inicio_mes_pasado} a {fin_mes_pasado}",
             total_mensual_pasado,
@@ -1183,15 +1185,17 @@ async def actualizar_rankings_end():
             unidad="end aportada"
         )
 
-        msg_mensual = await obtener_mensaje_fijo(channel, "ranking_end_aportada_mensual")
-        msg_semanal = await obtener_mensaje_fijo(channel, "ranking_end_aportada_semanal")
-        msg_diario = await obtener_mensaje_fijo(channel, "ranking_end_aportada_diario")
-        msg_mes_pasado = await obtener_mensaje_fijo(channel, "ranking_end_aportada_mes_pasado")
+        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+            "ranking_end_aportada_mes_pasado",
+            "ranking_end_aportada_mensual",
+            "ranking_end_aportada_semanal",
+            "ranking_end_aportada_diario",
+        ])
 
-        await msg_mensual.edit(content=None, embed=embed_mensual)
-        await msg_semanal.edit(content=None, embed=embed_semanal)
-        await msg_diario.edit(content=None, embed=embed_diario)
-        await msg_mes_pasado.edit(content=None, embed=embed_mes_pasado)
+        await mensajes["ranking_end_aportada_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
+        await mensajes["ranking_end_aportada_mensual"].edit(content=None, embed=embed_mensual)
+        await mensajes["ranking_end_aportada_semanal"].edit(content=None, embed=embed_semanal)
+        await mensajes["ranking_end_aportada_diario"].edit(content=None, embed=embed_diario)
         print("✅ Rankings END APORTADA actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_rankings_end: {e}")

@@ -428,6 +428,53 @@ async def recrear_mensajes_fijos_ordenados(channel: discord.TextChannel, tipos: 
     db.commit()
     return nuevos
 
+async def limpiar_mensajes_duplicados_por_titulo(
+    channel: discord.TextChannel,
+    titulos_objetivo: list[str],
+    keep_message_ids: list[int] | None = None,
+    limite: int = 100
+):
+    titulos_normalizados = {t.strip().lower() for t in titulos_objetivo if t}
+    keep_ids = set(keep_message_ids or [])
+
+    candidatos = []
+    async for msg in channel.history(limit=limite):
+        if msg.author != bot.user or not msg.embeds:
+            continue
+
+        titulo = (msg.embeds[0].title or '').strip()
+        if titulo.lower() in titulos_normalizados:
+            candidatos.append(msg)
+
+    grupos = {}
+    for msg in candidatos:
+        titulo = (msg.embeds[0].title or '').strip().lower()
+        grupos.setdefault(titulo, []).append(msg)
+
+    for _, mensajes in grupos.items():
+        if len(mensajes) <= 1:
+            continue
+
+        mensajes.sort(key=lambda m: m.created_at)
+
+        mensaje_a_conservar = None
+        for msg in mensajes:
+            if msg.id in keep_ids:
+                mensaje_a_conservar = msg
+                break
+
+        if mensaje_a_conservar is None:
+            mensaje_a_conservar = mensajes[-1]
+
+        for msg in mensajes:
+            if msg.id == mensaje_a_conservar.id:
+                continue
+            try:
+                await msg.delete()
+                print(f"🧹 Duplicado eliminado en {channel.name}: {msg.id}")
+            except Exception as e:
+                print(f"⚠️ No se pudo eliminar duplicado {msg.id}: {e}")
+
 def is_staff_member(member: discord.Member) -> bool:
     return (
         member.guild_permissions.administrator
@@ -1072,6 +1119,22 @@ async def actualizar_todos_los_ranking():
         await mensajes["ranking_mensual"].edit(content=None, embed=embed_mensual)
         await mensajes["ranking_semanal"].edit(content=None, embed=embed_semanal)
         await mensajes["ranking_diario"].edit(content=None, embed=embed_diario)
+
+        await limpiar_mensajes_duplicados_por_titulo(
+            channel,
+            [
+                embed_mes_pasado.title,
+                embed_mensual.title,
+                embed_semanal.title,
+                embed_diario.title,
+            ],
+            keep_message_ids=[
+                mensajes["ranking_mes_pasado"].id,
+                mensajes["ranking_mensual"].id,
+                mensajes["ranking_semanal"].id,
+                mensajes["ranking_diario"].id,
+            ]
+        )
         print("✅ Rankings shulker actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_todos_los_ranking: {e}")
@@ -1196,6 +1259,22 @@ async def actualizar_rankings_end():
         await mensajes["ranking_end_aportada_mensual"].edit(content=None, embed=embed_mensual)
         await mensajes["ranking_end_aportada_semanal"].edit(content=None, embed=embed_semanal)
         await mensajes["ranking_end_aportada_diario"].edit(content=None, embed=embed_diario)
+
+        await limpiar_mensajes_duplicados_por_titulo(
+            channel,
+            [
+                embed_mes_pasado.title,
+                embed_mensual.title,
+                embed_semanal.title,
+                embed_diario.title,
+            ],
+            keep_message_ids=[
+                mensajes["ranking_end_aportada_mes_pasado"].id,
+                mensajes["ranking_end_aportada_mensual"].id,
+                mensajes["ranking_end_aportada_semanal"].id,
+                mensajes["ranking_end_aportada_diario"].id,
+            ]
+        )
         print("✅ Rankings END APORTADA actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_rankings_end: {e}")

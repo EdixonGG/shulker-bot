@@ -384,6 +384,50 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     db.commit()
     return msg
 
+async def recrear_mensajes_fijos_ordenados(channel: discord.TextChannel, tipos: list[str]):
+    existentes = []
+
+    for tipo in tipos:
+        cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
+        row = cursor.fetchone()
+        msg = None
+        if row:
+            try:
+                msg = await channel.fetch_message(row["message_id"])
+            except Exception:
+                msg = None
+        existentes.append((tipo, msg))
+
+    ids_existentes = [msg.id for _, msg in existentes if msg is not None]
+    orden_correcto = len(ids_existentes) == len(tipos) and ids_existentes == sorted(ids_existentes)
+
+    if orden_correcto:
+        return {tipo: msg for tipo, msg in existentes if msg is not None}
+
+    print(f"🔁 Reordenando mensajes fijos en {channel.name}: {', '.join(tipos)}")
+
+    for tipo, msg in existentes:
+        if msg is not None:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        cursor.execute("DELETE FROM mensajes_fijos WHERE tipo = ?", (tipo,))
+
+    db.commit()
+
+    nuevos = {}
+    for tipo in tipos:
+        nuevo = await channel.send("Cargando...")
+        cursor.execute(
+            "INSERT OR REPLACE INTO mensajes_fijos (tipo, message_id) VALUES (?, ?)",
+            (tipo, nuevo.id)
+        )
+        nuevos[tipo] = nuevo
+
+    db.commit()
+    return nuevos
+
 def is_staff_member(member: discord.Member) -> bool:
     return (
         member.guild_permissions.administrator
@@ -834,6 +878,79 @@ async def crear_embed_ranking(
             value=f"`{format_number(total_periodo_shulkers)}` {unidad.upper()}",
             inline=False
         )
+
+    embed.set_footer(text=f"{footer} | Hora Chile")
+    return embed
+
+async def crear_embed_ranking_mes_pasado_gamer(
+    titulo,
+    emoji,
+    color,
+    datos,
+    footer,
+    total_periodo_valor: int,
+    mostrar_equivalencias: bool = True,
+    unidad: str = "shulkers"
+):
+    if not datos:
+        descripcion = (
+            "💤 **Temporada cerrada**\n"
+            "Nadie dejó marca en este periodo.\n"
+            "El próximo mes puede ser tuyo."
+        )
+    else:
+        top1 = cortar_nombre(datos[0]["username"], 20)
+        top1_total = int(datos[0]["s"] or 0)
+        lineas = [
+            f"👑 **MVP del mes pasado:** **{top1}** con **{format_number(top1_total)} {unidad}**",
+            "",
+            "⚔️ **Tabla de guerra:**"
+        ]
+
+        maximo = int(datos[0]["s"] or 0)
+        iconos = ["👑", "🔥", "⚡", "🎯", "🛡️"]
+
+        for i, row in enumerate(datos, start=1):
+            user = cortar_nombre(row["username"], 20)
+            total = int(row["s"] or 0)
+            porcentaje = int(round((total / maximo) * 100)) if maximo > 0 else 0
+            barra = barra_progreso(total, maximo, largo=10)
+            icono = iconos[i - 1] if i <= len(iconos) else "✨"
+            lineas.append(
+                f"{icono} **#{i} {user}** — **{format_number(total)} {unidad}**\n"
+                f"`Poder: {porcentaje}%` {barra}"
+            )
+
+        descripcion = "\n\n".join(lineas)
+
+    embed = discord.Embed(
+        title=f"{emoji} {titulo}",
+        description=descripcion,
+        color=color,
+        timestamp=utc_now()
+    )
+
+    if mostrar_equivalencias:
+        stacks, niveles, pv, resto = equivalencias(total_periodo_valor)
+        embed.add_field(
+            name="🎮 Botín total del evento",
+            value=(
+                f"`{format_number(total_periodo_valor)}` SHULKERS\n"
+                f"`{format_number(niveles)}` NIVELES\n"
+                f"`{pv}` PVS + `{resto}` SHULKERS"
+            ),
+            inline=False
+        )
+        embed.add_field(name="🏆 Estado", value="`TEMPORADA CERRADA`", inline=True)
+        embed.add_field(name="💥 Impacto", value=f"`{pv}` PVS", inline=True)
+    else:
+        embed.add_field(
+            name="💎 Botín total del evento",
+            value=f"`{format_number(total_periodo_valor)}` {unidad.upper()}",
+            inline=False
+        )
+        embed.add_field(name="🏆 Estado", value="`TEMPORADA CERRADA`", inline=True)
+        embed.add_field(name="🚀 Aporte", value=f"`{format_number(total_periodo_valor)}` {unidad.upper()}", inline=True)
 
     embed.set_footer(text=f"{footer} | Hora Chile")
     return embed

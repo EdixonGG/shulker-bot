@@ -1,4 +1,5 @@
 import os
+import asyncio
 import io
 import sqlite3
 import discord
@@ -1375,6 +1376,28 @@ async def ranking_automatico():
     await actualizar_panel_progreso()
     await actualizar_rankings_end()
 
+async def actualizar_shulker_post_registro(interaction: discord.Interaction, cantidad_int: int, nuevo_total: int):
+    try:
+        await actualizar_todos_los_ranking()
+        await actualizar_panel_progreso()
+
+        end_channel = interaction.client.get_channel(END_CHANNEL_ID)
+        if end_channel:
+            embed = discord.Embed(
+                title="📦 Registro de Shulker",
+                description=(
+                    f"👤 {interaction.user.mention}\n"
+                    f"➕ Registró: `{cantidad_int}`\n"
+                    f"📊 Total hoy: `{nuevo_total}`"
+                ),
+                color=discord.Color.green(),
+                timestamp=utc_now()
+            )
+            await end_channel.send(embed=embed)
+
+    except Exception as e:
+        print(f"❌ Error en actualizar_shulker_post_registro: {e}")
+
 # ===============================
 # MODAL SHULKER NORMAL
 # ===============================
@@ -1385,8 +1408,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         try:
             user_id = interaction.user.id
 
-            # Responde de inmediato para evitar el error visual de Discord por timeout (>3s)
-            await interaction.response.defer(ephemeral=True, thinking=False)
+            await interaction.response.defer(ephemeral=True)
 
             restante = get_cooldown_remaining("shulker_normal", user_id)
             if restante > 0:
@@ -1426,27 +1448,17 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             row = cursor.fetchone()
             nuevo_total = int(row["total"] or 0) if row else cantidad_int
 
-            await actualizar_todos_los_ranking()
-            await actualizar_panel_progreso()
-
-            end_channel = interaction.client.get_channel(END_CHANNEL_ID)
-            if end_channel:
-                embed = discord.Embed(
-                    title="📦 Registro de Shulker",
-                    description=(
-                        f"👤 {interaction.user.mention}\n"
-                        f"➕ Registró: `{cantidad_int}`\n"
-                        f"📊 Total hoy: `{nuevo_total}`"
-                    ),
-                    color=discord.Color.green(),
-                    timestamp=utc_now()
-                )
-                await end_channel.send(embed=embed)
-
             await interaction.followup.send(
-                f"✅ Registro guardado. Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.",
+                f"✅ Registro guardado al instante. Añadiste `{cantidad_int}` shulkers. "
+                f"Total de hoy: `{nuevo_total}`.\n"
+                f"📡 Actualizando rankings en segundo plano...",
                 ephemeral=True
             )
+
+            asyncio.create_task(
+                actualizar_shulker_post_registro(interaction, cantidad_int, nuevo_total)
+            )
+
             print(f"✅ Registro guardado para {username}: +{cantidad_int}")
         except Exception as e:
             print(f"❌ Error en modal on_submit: {e}")

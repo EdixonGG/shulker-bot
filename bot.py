@@ -1434,10 +1434,8 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 embed = discord.Embed(
                     title="📦 Registro de Shulker",
                     description=(
-                        f"👤 {interaction.user.mention}
-"
-                        f"➕ Registró: `{cantidad_int}`
-"
+                        f"👤 {interaction.user.mention}\n"
+                        f"➕ Registró: `{cantidad_int}`\n"
                         f"📊 Total hoy: `{nuevo_total}`"
                     ),
                     color=discord.Color.green(),
@@ -1525,14 +1523,10 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
             set_cooldown("end_aportada", user_id, COOLDOWN_SECONDS)
 
             await interaction.followup.send(
-                "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.
-"
-                f"⏳ Tienes `{END_UPLOAD_TIMEOUT_SECONDS}` segundos.
-"
-                "✅ Cuando la subas, se enviará al canal privado de staff para revisión.
-"
-                "⚠️ Solo lo aprobado contará en el top público.
-"
+                "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.\n"
+                f"⏳ Tienes `{END_UPLOAD_TIMEOUT_SECONDS}` segundos.\n"
+                "✅ Cuando la subas, se enviará al canal privado de staff para revisión.\n"
+                "⚠️ Solo lo aprobado contará en el top público.\n"
                 "🚫 No escribas texto en el canal, solo sube la imagen.",
                 ephemeral=True
             )

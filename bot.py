@@ -1385,9 +1385,12 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
         try:
             user_id = interaction.user.id
 
+            # Responde de inmediato para evitar el error visual de Discord por timeout (>3s)
+            await interaction.response.defer(ephemeral=True, thinking=False)
+
             restante = get_cooldown_remaining("shulker_normal", user_id)
             if restante > 0:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"⏳ Espera `{restante}` segundos antes de registrar otra vez.",
                     ephemeral=True
                 )
@@ -1398,7 +1401,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 if cantidad_int <= 0:
                     raise ValueError
             except ValueError:
-                await interaction.response.send_message("❌ Número inválido.", ephemeral=True)
+                await interaction.followup.send("❌ Número inválido.", ephemeral=True)
                 return
 
             hoy = local_date_str()
@@ -1431,8 +1434,10 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 embed = discord.Embed(
                     title="📦 Registro de Shulker",
                     description=(
-                        f"👤 {interaction.user.mention}\n"
-                        f"➕ Registró: `{cantidad_int}`\n"
+                        f"👤 {interaction.user.mention}
+"
+                        f"➕ Registró: `{cantidad_int}`
+"
                         f"📊 Total hoy: `{nuevo_total}`"
                     ),
                     color=discord.Color.green(),
@@ -1440,18 +1445,20 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 )
                 await end_channel.send(embed=embed)
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ Registro guardado. Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.",
                 ephemeral=True
             )
             print(f"✅ Registro guardado para {username}: +{cantidad_int}")
         except Exception as e:
             print(f"❌ Error en modal on_submit: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
+            try:
+                await interaction.followup.send(
                     "❌ Ocurrió un error al guardar el registro.",
                     ephemeral=True
                 )
+            except Exception:
+                pass
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         print(f"❌ Error en ShulkerModal.on_error: {error}")
@@ -1475,10 +1482,13 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
         try:
             user_id = interaction.user.id
 
+            # Responde de inmediato para evitar el timeout visual del modal
+            await interaction.response.defer(ephemeral=True, thinking=False)
+
             pendiente = get_pending_end(user_id)
             if pendiente:
                 restante = get_pending_end_remaining_seconds(user_id)
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"⏳ Ya tienes un registro pendiente de evidencia. "
                     f"Sube la imagen en este canal o espera `{max(1, restante)}` segundos para que expire.",
                     ephemeral=True
@@ -1487,7 +1497,7 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
 
             restante = get_cooldown_remaining("end_aportada", user_id)
             if restante > 0:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"⏳ Espera `{restante}` segundos antes de registrar otra aportación.",
                     ephemeral=True
                 )
@@ -1498,7 +1508,7 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
                 if cantidad_int <= 0:
                     raise ValueError
             except ValueError:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ Número inválido. Debes escribir un número entero mayor que 0.",
                     ephemeral=True
                 )
@@ -1514,22 +1524,28 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
 
             set_cooldown("end_aportada", user_id, COOLDOWN_SECONDS)
 
-            await interaction.response.send_message(
-                "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.\n"
-                f"⏳ Tienes `{END_UPLOAD_TIMEOUT_SECONDS}` segundos.\n"
-                "✅ Cuando la subas, se enviará al canal privado de staff para revisión.\n"
-                "⚠️ Solo lo aprobado contará en el top público.\n"
+            await interaction.followup.send(
+                "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.
+"
+                f"⏳ Tienes `{END_UPLOAD_TIMEOUT_SECONDS}` segundos.
+"
+                "✅ Cuando la subas, se enviará al canal privado de staff para revisión.
+"
+                "⚠️ Solo lo aprobado contará en el top público.
+"
                 "🚫 No escribas texto en el canal, solo sube la imagen.",
                 ephemeral=True
             )
 
         except Exception as e:
             print(f"❌ Error en EndAportadoModal.on_submit: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
+            try:
+                await interaction.followup.send(
                     "❌ Ocurrió un error al iniciar el registro de End aportada.",
                     ephemeral=True
                 )
+            except Exception:
+                pass
 
 # ===============================
 # MODAL RECHAZO STAFF

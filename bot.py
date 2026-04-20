@@ -815,7 +815,7 @@ async def actualizar_panel_progreso():
         bar_dia = barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20)
 
         embed = discord.Embed(
-            title="🏝️ PROGRESO DE LA ISLA ECR",
+            title="🏝️ PROGRESO DE LA ISLA (PANEL NUEVO)",
             color=discord.Color.dark_teal(),
             timestamp=utc_now()
         )
@@ -1078,10 +1078,10 @@ async def actualizar_todos_los_ranking():
         )
 
         embed_mensual = await crear_embed_ranking(
-            "TOP MENSUAL", "👑", discord.Color.purple(), mensual, "Mes actual", total_mensual
+            "TEMPORADA ACTUAL", "👑", discord.Color.purple(), mensual, "Mes en curso", total_mensual
         )
         embed_semanal = await crear_embed_ranking(
-            "TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal
+            "GUERRA SEMANAL", "⚔️", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal
         )
         embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
             "LEYENDAS DEL MES PASADO",
@@ -1180,18 +1180,18 @@ async def actualizar_rankings_end():
         )
 
         embed_mensual = await crear_embed_ranking(
-            "END APORTADA • TOP MENSUAL",
+            "END APORTADA • TEMPORADA ACTUAL",
             "🪨",
             discord.Color.dark_gray(),
             mensual,
-            "Mes actual",
+            "Mes en curso",
             total_mensual,
             mostrar_equivalencias=False,
             unidad="end aportada"
         )
         embed_semanal = await crear_embed_ranking(
-            "END APORTADA • TOP SEMANAL",
-            "📈",
+            "END APORTADA • FRENTE SEMANAL",
+            "⛏️",
             discord.Color.blue(),
             semanal,
             f"Desde {inicio_semana}",

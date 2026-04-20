@@ -1529,6 +1529,32 @@ async def publicar_boton_end_aportada():
         )
         print("✅ Botón fijo END aportada actualizado")
 
+async def publicar_panel_estadisticas():
+    try:
+        if not STATS_PANEL_CHANNEL_ID:
+            return
+
+        channel = bot.get_channel(STATS_PANEL_CHANNEL_ID)
+        if not channel:
+            print("⚠️ No se encontró STATS_PANEL_CHANNEL_ID")
+            return
+
+        msg = await obtener_mensaje_fijo(channel, "panel_estadisticas_personales")
+        embed = discord.Embed(
+            title="📊 Panel de estadísticas personales",
+            description=(
+                "Presiona el botón para ver tu resumen privado.\n\n"
+                "🔒 La respuesta será **ephemeral** y solo tú podrás verla.\n"
+                "📦 Incluye shulkers, End aportada, progreso y rendimiento."
+            ),
+            color=discord.Color.dark_teal(),
+            timestamp=utc_now()
+        )
+        await msg.edit(content=None, embed=embed, view=StatsPanelView())
+        print("✅ Panel de estadísticas personales actualizado")
+    except Exception as e:
+        print(f"❌ Error en publicar_panel_estadisticas: {e}")
+
 async def sincronizar_mensajes_revision():
     try:
         review_channel = bot.get_channel(END_APORTE_REVIEW_CHANNEL_ID)
@@ -2483,6 +2509,10 @@ async def on_command_error(ctx, error):
         return
 
     print(f"❌ Error de comando: {error}")
+    try:
+        await ctx.reply(f"❌ Ocurrió un error al ejecutar el comando: `{error}`", mention_author=False)
+    except Exception:
+        pass
 
 # ===============================
 # RUN

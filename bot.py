@@ -15,6 +15,7 @@ FORM_CHANNEL_ID = 1465764092978532547
 RANKING_CHANNEL_ID = 1468791225619320894
 END_CHANNEL_ID = 1462316362515873947
 PROGRESS_CHANNEL_ID = 1478948711995412702
+STATS_PANEL_CHANNEL_ID = 1495791333095506035
 
 # ===============================
 # NUEVO SISTEMA END APORTADA
@@ -85,6 +86,7 @@ class ShulkerBot(commands.Bot):
         self.add_view(ShulkerButton())
         self.add_view(EndAportadoButton())
         self.add_view(EndReviewView())
+        self.add_view(StatsPanelView())
         print("✅ Vistas persistentes registradas en setup_hook")
 
 bot = ShulkerBot(command_prefix="!", intents=intents)
@@ -1240,6 +1242,249 @@ async def actualizar_rankings_end():
         print(f"❌ Error en actualizar_rankings_end: {e}")
 
 # ===============================
+# ESTADÍSTICAS PERSONALES
+# ===============================
+def start_of_week_local(ref: date | None = None) -> date:
+    ref = ref or today_local()
+    return clamp_start(ref - timedelta(days=ref.weekday()))
+
+
+def start_of_month_local(ref: date | None = None) -> date:
+    ref = ref or today_local()
+    return clamp_start(ref.replace(day=1))
+
+
+def date_range_sum(tabla: str, user_id: int, desde: str, hasta: str) -> int:
+    cursor.execute(
+        f"SELECT COALESCE(SUM(total), 0) AS total FROM {tabla} WHERE user_id = ? AND fecha >= ? AND fecha < ?",
+        (user_id, desde, hasta)
+    )
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+
+def all_time_sum(tabla: str, user_id: int) -> int:
+    cursor.execute(
+        f"SELECT COALESCE(SUM(total), 0) AS total FROM {tabla} WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+
+def best_day_sum(tabla: str, user_id: int) -> tuple[str, int]:
+    cursor.execute(
+        f"""
+        SELECT fecha, total
+        FROM {tabla}
+        WHERE user_id = ?
+        ORDER BY total DESC, fecha DESC
+        LIMIT 1
+        """,
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return "Sin registros", 0
+    return str(row["fecha"]), int(row["total"] or 0)
+
+
+def pending_end_requests_count(user_id: int) -> int:
+    cursor.execute(
+        "SELECT COUNT(*) AS c FROM end_requests WHERE user_id = ? AND status = 'pending'",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    return int(row["c"] or 0)
+
+
+def latest_approved_end_date(user_id: int) -> str:
+    cursor.execute(
+        "SELECT MAX(fecha) AS ultima FROM end_aportado WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    return str(row["ultima"] or "Sin aprobaciones")
+
+
+def get_position_in_period(tabla: str, user_id: int, desde: str, hasta: str | None = None) -> tuple[int | None, int]:
+    if hasta is None:
+        cursor.execute(
+            f"""
+            SELECT user_id, SUM(total) AS s
+            FROM {tabla}
+            WHERE fecha >= ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            """,
+            (desde,)
+        )
+    else:
+        cursor.execute(
+            f"""
+            SELECT user_id, SUM(total) AS s
+            FROM {tabla}
+            WHERE fecha >= ? AND fecha < ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            """,
+            (desde, hasta)
+        )
+    rows = cursor.fetchall()
+    for idx, row in enumerate(rows, start=1):
+        if int(row["user_id"]) == user_id:
+            return idx, int(row["s"] or 0)
+    return None, 0
+
+
+def points_to_top5(tabla: str, user_id: int, desde: str) -> tuple[int | None, int | None]:
+    cursor.execute(
+        f"""
+        SELECT user_id, SUM(total) AS s
+        FROM {tabla}
+        WHERE fecha >= ?
+        GROUP BY user_id
+        ORDER BY s DESC
+        """,
+        (desde,)
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return None, 1
+
+    top5_cut = int(rows[4]["s"] or 0) if len(rows) >= 5 else int(rows[-1]["s"] or 0)
+    my_total = 0
+    my_pos = None
+    for idx, row in enumerate(rows, start=1):
+        if int(row["user_id"]) == user_id:
+            my_total = int(row["s"] or 0)
+            my_pos = idx
+            break
+
+    if my_pos is not None and my_pos <= 5:
+        return 0, my_pos
+
+    needed = max(0, top5_cut - my_total + 1)
+    return needed, my_pos
+
+
+def build_personal_stats_embed(member: discord.abc.User) -> discord.Embed:
+    user_id = member.id
+    hoy = today_local()
+
+    inicio_semana = str(start_of_week_local(hoy))
+    inicio_mes = str(start_of_month_local(hoy))
+    inicio_semana_pasada_date = start_of_week_local(hoy) - timedelta(days=7)
+    fin_semana_pasada_date = start_of_week_local(hoy)
+    inicio_mes_pasado_date = (hoy.replace(day=1) - timedelta(days=1)).replace(day=1)
+    fin_mes_pasado_date = hoy.replace(day=1)
+    manana = str(hoy + timedelta(days=1))
+
+    sh_semana = date_range_sum("shulker", user_id, inicio_semana, manana)
+    sh_mes = date_range_sum("shulker", user_id, inicio_mes, manana)
+    sh_total = all_time_sum("shulker", user_id)
+    sh_best_day_date, sh_best_day_total = best_day_sum("shulker", user_id)
+
+    end_semana = date_range_sum("end_aportado", user_id, inicio_semana, manana)
+    end_mes = date_range_sum("end_aportado", user_id, inicio_mes, manana)
+    end_total = all_time_sum("end_aportado", user_id)
+    end_best_day_date, end_best_day_total = best_day_sum("end_aportado", user_id)
+    end_pending = pending_end_requests_count(user_id)
+    end_latest = latest_approved_end_date(user_id)
+
+    sh_prev_week = date_range_sum("shulker", user_id, str(inicio_semana_pasada_date), str(fin_semana_pasada_date))
+    sh_prev_month = date_range_sum("shulker", user_id, str(inicio_mes_pasado_date), str(fin_mes_pasado_date))
+    end_prev_week = date_range_sum("end_aportado", user_id, str(inicio_semana_pasada_date), str(fin_semana_pasada_date))
+    end_prev_month = date_range_sum("end_aportado", user_id, str(inicio_mes_pasado_date), str(fin_mes_pasado_date))
+
+    sh_week_pos, _ = get_position_in_period("shulker", user_id, inicio_semana)
+    sh_month_pos, _ = get_position_in_period("shulker", user_id, inicio_mes)
+    end_week_pos, _ = get_position_in_period("end_aportado", user_id, inicio_semana)
+    end_month_pos, _ = get_position_in_period("end_aportado", user_id, inicio_mes)
+
+    sh_to_top5_week, _ = points_to_top5("shulker", user_id, inicio_semana)
+    end_to_top5_week, _ = points_to_top5("end_aportado", user_id, inicio_semana)
+
+    def pos_text(pos: int | None) -> str:
+        return f"#{pos}" if pos else "Fuera del ranking"
+
+    def trend(current: int, previous: int) -> str:
+        diff = current - previous
+        if diff > 0:
+            return f"+{diff} vs periodo anterior"
+        if diff < 0:
+            return f"{diff} vs periodo anterior"
+        return "Sin cambio vs periodo anterior"
+
+    def top5_text(value: int | None, unidad: str) -> str:
+        if value == 0:
+            return "Ya estás dentro del Top 5"
+        if value is None:
+            return "Aún no hay referencia suficiente"
+        return f"Te faltan {value} {unidad} para Top 5 semanal"
+
+    embed = discord.Embed(
+        title="🎯 Tus estadísticas personales",
+        description=(
+            "Este resumen es privado y se actualiza con los datos reales del bot.\n"
+            "Úsalo para medir tu progreso sin llenar el canal."
+        ),
+        color=discord.Color.dark_teal(),
+        timestamp=utc_now()
+    )
+
+    embed.add_field(
+        name="📦 Mis Shulkers",
+        value=(
+            f"**Semanal:** `{sh_semana:,}`\n"
+            f"**Mensual:** `{sh_mes:,}`\n"
+            f"**Histórico:** `{sh_total:,}`\n"
+            f"**Mejor día:** `{sh_best_day_total:,}` ({sh_best_day_date})"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🪨 Mi End Aportada",
+        value=(
+            f"**Semanal:** `{end_semana:,}`\n"
+            f"**Mensual:** `{end_mes:,}`\n"
+            f"**Aprobada histórica:** `{end_total:,}`\n"
+            f"**Pendiente de revisión:** `{end_pending}`\n"
+            f"**Última aprobada:** `{end_latest}`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎯 Mi Progreso",
+        value=(
+            f"**Posición semanal Shulker:** `{pos_text(sh_week_pos)}`\n"
+            f"**Posición mensual Shulker:** `{pos_text(sh_month_pos)}`\n"
+            f"**Posición semanal End:** `{pos_text(end_week_pos)}`\n"
+            f"**Posición mensual End:** `{pos_text(end_month_pos)}`\n"
+            f"**Shulker:** {top5_text(sh_to_top5_week, 'shulkers')}\n"
+            f"**End:** {top5_text(end_to_top5_week, 'end aportada')}"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔥 Mi Rendimiento",
+        value=(
+            f"**Shulker semanal:** `{trend(sh_semana, sh_prev_week)}`\n"
+            f"**Shulker mensual:** `{trend(sh_mes, sh_prev_month)}`\n"
+            f"**End semanal:** `{trend(end_semana, end_prev_week)}`\n"
+            f"**End mensual:** `{trend(end_mes, end_prev_month)}`\n"
+            f"**Mejor día End:** `{end_best_day_total:,}` ({end_best_day_date})"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text=f"Usuario: {member.display_name} | Hora Chile")
+    return embed
+
+# ===============================
 # PUBLICACIÓN / REPARACIÓN
 # ===============================
 async def publicar_boton_shulker():
@@ -1665,6 +1910,30 @@ class EndAportadoButton(discord.ui.View):
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ No se pudo abrir el formulario.",
+                    ephemeral=True
+                )
+
+# ===============================
+# PANEL DE ESTADÍSTICAS PERSONALES
+# ===============================
+class StatsPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="🎯estadisticas📊",
+        style=discord.ButtonStyle.secondary,
+        custom_id="panel_estadisticas_personales_v1"
+    )
+    async def mostrar_estadisticas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            embed = build_personal_stats_embed(interaction.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            print(f"❌ Error al mostrar estadísticas personales: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ No se pudieron cargar tus estadísticas en este momento.",
                     ephemeral=True
                 )
 
@@ -2102,7 +2371,8 @@ async def estadoisla(ctx):
 async def publicarbotones(ctx):
     await publicar_boton_shulker()
     await publicar_boton_end_aportada()
-    await ctx.reply("✅ Botones republicados correctamente.", mention_author=False)
+    await publicar_panel_estadisticas()
+    await ctx.reply("✅ Botones/paneles republicados correctamente.", mention_author=False)
 
 @bot.command(name="publicarrankings")
 @commands.has_permissions(administrator=True)
@@ -2116,6 +2386,12 @@ async def publicarrankings(ctx):
 async def publicarpanel(ctx):
     await actualizar_panel_progreso()
     await ctx.reply("✅ Panel republicado/actualizado correctamente.", mention_author=False)
+
+@bot.command(name="publicarestadisticas")
+@commands.has_permissions(administrator=True)
+async def publicarestadisticas(ctx):
+    await publicar_panel_estadisticas()
+    await ctx.reply("✅ Panel de estadísticas republicado correctamente.", mention_author=False)
 
 @bot.command(name="sincronizarrevision")
 @commands.has_permissions(administrator=True)
@@ -2183,6 +2459,7 @@ async def on_ready():
 
     await publicar_boton_shulker()
     await publicar_boton_end_aportada()
+    await publicar_panel_estadisticas()
     await actualizar_todos_los_ranking()
     await actualizar_panel_progreso()
     await actualizar_rankings_end()

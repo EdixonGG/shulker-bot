@@ -33,8 +33,7 @@ COOLDOWN_SECONDS = 60
 END_UPLOAD_TIMEOUT_SECONDS = 120
 PUBLIC_EVIDENCE_DELETE_SECONDS = 60
 
-TARGET_TOP1_LEVEL = 105_000_000
-TARGET_TOP3_LEVEL = 80_000_000
+TARGET_NEXT_LEVEL = 250_000_000
 DAILY_SHULKER_GOAL = 120
 
 # ===============================
@@ -384,6 +383,22 @@ async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     )
     db.commit()
     return msg
+
+async def eliminar_mensaje_fijo_si_existe(channel: discord.TextChannel, tipo: str):
+    cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
+    row = cursor.fetchone()
+
+    if row and row["message_id"]:
+        try:
+            msg = await channel.fetch_message(row["message_id"])
+            await msg.delete()
+            print(f"🗑️ Mensaje fijo eliminado: {tipo}")
+        except Exception as e:
+            print(f"⚠️ No se pudo eliminar mensaje fijo {tipo}: {e}")
+
+    cursor.execute("DELETE FROM mensajes_fijos WHERE tipo = ?", (tipo,))
+    db.commit()
+
 
 async def recrear_mensajes_fijos_ordenados(channel: discord.TextChannel, tipos: list[str]):
     existentes = []
@@ -787,24 +802,16 @@ async def actualizar_panel_progreso():
         nuevos_sh = max(0, total_sh - base_shulkers)
         niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
         nivel_estimado = base_level + niveles_ganados
-
-        faltan_top1 = max(0, TARGET_TOP1_LEVEL - nivel_estimado)
-        faltan_top3 = max(0, TARGET_TOP3_LEVEL - nivel_estimado)
-
-        shulkers_top1 = (faltan_top1 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
-        shulkers_top3 = (faltan_top3 + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
-
-        pv1, sh1 = shulkers_a_pv_y_shulkers(shulkers_top1)
-        pv3, sh3 = shulkers_a_pv_y_shulkers(shulkers_top3)
+        faltan_meta = max(0, TARGET_NEXT_LEVEL - nivel_estimado)
+        shulkers_meta = (faltan_meta + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
+        pv_meta, sh_meta = shulkers_a_pv_y_shulkers(shulkers_meta)
 
         faltan_diario = max(0, DAILY_SHULKER_GOAL - hoy_sh)
 
-        pct_top1 = (nivel_estimado / TARGET_TOP1_LEVEL) * 100 if TARGET_TOP1_LEVEL else 0
-        pct_top3 = (nivel_estimado / TARGET_TOP3_LEVEL) * 100 if TARGET_TOP3_LEVEL else 0
+        pct_meta = (nivel_estimado / TARGET_NEXT_LEVEL) * 100 if TARGET_NEXT_LEVEL else 0
         pct_dia = (hoy_sh / DAILY_SHULKER_GOAL) * 100 if DAILY_SHULKER_GOAL else 0
 
-        bar_top1 = barra_meta(nivel_estimado, TARGET_TOP1_LEVEL, largo=20)
-        bar_top3 = barra_meta(nivel_estimado, TARGET_TOP3_LEVEL, largo=20)
+        bar_meta_global = barra_meta(nivel_estimado, TARGET_NEXT_LEVEL, largo=20)
         bar_dia = barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20)
 
         embed = discord.Embed(
@@ -828,23 +835,12 @@ async def actualizar_panel_progreso():
             ),
             inline=False
         )
-
         embed.add_field(
-            name="👑 META TOP 1",
+            name="🏆 PRÓXIMA META GLOBAL",
             value=(
-                f"`{nivel_estimado:,} / {TARGET_TOP1_LEVEL:,}`\n"
-                f"`{bar_top1}` `{pct_top1:.1f}%`\n"
-                f"Faltan: `{pv1}` PVS + `{sh1}` SHULKERS"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name="📈 META TOP 3",
-            value=(
-                f"`{nivel_estimado:,} / {TARGET_TOP3_LEVEL:,}`\n"
-                f"`{bar_top3}` `{pct_top3:.1f}%`\n"
-                f"Faltan: `{pv3}` PVS + `{sh3}` SHULKERS"
+                f"`{nivel_estimado:,} / {TARGET_NEXT_LEVEL:,}`\n"
+                f"`{bar_meta_global}` `{pct_meta:.1f}%`\n"
+                f"Faltan: `{pv_meta}` PVS + `{sh_meta}` SHULKERS"
             ),
             inline=False
         )
@@ -1069,17 +1065,6 @@ async def actualizar_todos_los_ranking():
         cursor.execute("""
             SELECT username, SUM(total) as s
             FROM shulker
-            WHERE fecha = ? AND fecha >= ?
-            GROUP BY user_id
-            ORDER BY s DESC
-            LIMIT 5
-        """, (str(hoy), str(BOT_START_DATE)))
-        diario = cursor.fetchall()
-        total_diario = await total_periodo("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
-
-        cursor.execute("""
-            SELECT username, SUM(total) as s
-            FROM shulker
             WHERE fecha >= ? AND fecha < ?
             GROUP BY user_id
             ORDER BY s DESC
@@ -1098,9 +1083,6 @@ async def actualizar_todos_los_ranking():
         embed_semanal = await crear_embed_ranking(
             "TOP SEMANAL", "📈", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal
         )
-        embed_diario = await crear_embed_ranking(
-            "TOP DIARIO", "⚡", discord.Color.gold(), diario, f"Hoy • {hoy}", total_diario
-        )
         embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
             "LEYENDAS DEL MES PASADO",
             "👾",
@@ -1110,17 +1092,17 @@ async def actualizar_todos_los_ranking():
             total_mensual_pasado
         )
 
+        await eliminar_mensaje_fijo_si_existe(channel, "ranking_diario")
+
         mensajes = await recrear_mensajes_fijos_ordenados(channel, [
             "ranking_mes_pasado",
             "ranking_mensual",
             "ranking_semanal",
-            "ranking_diario",
         ])
 
         await mensajes["ranking_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
         await mensajes["ranking_mensual"].edit(content=None, embed=embed_mensual)
         await mensajes["ranking_semanal"].edit(content=None, embed=embed_semanal)
-        await mensajes["ranking_diario"].edit(content=None, embed=embed_diario)
 
         await limpiar_mensajes_duplicados_por_titulo(
             channel,
@@ -1128,13 +1110,11 @@ async def actualizar_todos_los_ranking():
                 embed_mes_pasado.title,
                 embed_mensual.title,
                 embed_semanal.title,
-                embed_diario.title,
             ],
             keep_message_ids=[
                 mensajes["ranking_mes_pasado"].id,
                 mensajes["ranking_mensual"].id,
                 mensajes["ranking_semanal"].id,
-                mensajes["ranking_diario"].id,
             ]
         )
         print("✅ Rankings shulker actualizados")
@@ -1187,17 +1167,6 @@ async def actualizar_rankings_end():
         cursor.execute("""
             SELECT username, SUM(total) as s
             FROM end_aportado
-            WHERE fecha = ? AND fecha >= ?
-            GROUP BY user_id
-            ORDER BY s DESC
-            LIMIT 5
-        """, (str(hoy), str(BOT_START_DATE)))
-        diario = cursor.fetchall()
-        total_diario = await total_periodo_end("fecha = ? AND fecha >= ?", (str(hoy), str(BOT_START_DATE)))
-
-        cursor.execute("""
-            SELECT username, SUM(total) as s
-            FROM end_aportado
             WHERE fecha >= ? AND fecha < ?
             GROUP BY user_id
             ORDER BY s DESC
@@ -1230,16 +1199,6 @@ async def actualizar_rankings_end():
             mostrar_equivalencias=False,
             unidad="end aportada"
         )
-        embed_diario = await crear_embed_ranking(
-            "END APORTADA • TOP DIARIO",
-            "⚡",
-            discord.Color.gold(),
-            diario,
-            f"Hoy • {hoy}",
-            total_diario,
-            mostrar_equivalencias=False,
-            unidad="end aportada"
-        )
         embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
             "END APORTADA • HÉROES DEL MES PASADO",
             "🪨",
@@ -1251,17 +1210,17 @@ async def actualizar_rankings_end():
             unidad="end aportada"
         )
 
+        await eliminar_mensaje_fijo_si_existe(channel, "ranking_end_aportada_diario")
+
         mensajes = await recrear_mensajes_fijos_ordenados(channel, [
             "ranking_end_aportada_mes_pasado",
             "ranking_end_aportada_mensual",
             "ranking_end_aportada_semanal",
-            "ranking_end_aportada_diario",
         ])
 
         await mensajes["ranking_end_aportada_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
         await mensajes["ranking_end_aportada_mensual"].edit(content=None, embed=embed_mensual)
         await mensajes["ranking_end_aportada_semanal"].edit(content=None, embed=embed_semanal)
-        await mensajes["ranking_end_aportada_diario"].edit(content=None, embed=embed_diario)
 
         await limpiar_mensajes_duplicados_por_titulo(
             channel,
@@ -1269,13 +1228,11 @@ async def actualizar_rankings_end():
                 embed_mes_pasado.title,
                 embed_mensual.title,
                 embed_semanal.title,
-                embed_diario.title,
             ],
             keep_message_ids=[
                 mensajes["ranking_end_aportada_mes_pasado"].id,
                 mensajes["ranking_end_aportada_mensual"].id,
                 mensajes["ranking_end_aportada_semanal"].id,
-                mensajes["ranking_end_aportada_diario"].id,
             ]
         )
         print("✅ Rankings END APORTADA actualizados")

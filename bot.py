@@ -815,7 +815,7 @@ async def actualizar_panel_progreso():
         bar_dia = barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20)
 
         embed = discord.Embed(
-            title="🏝️ PROGRESO DE LA ISLA (PANEL NUEVO)",
+            title="🏝️ PROGRESO DE LA ISLA ECR",
             color=discord.Color.dark_teal(),
             timestamp=utc_now()
         )

@@ -1948,6 +1948,11 @@ class DestinoSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         destino = self.values[0]
         await interaction.response.send_modal(ShulkerModal(destino=destino))
+        # Borrar el menú ephemeral para no saturar
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
 
 
 class DestinoView(discord.ui.View):
@@ -2022,9 +2027,9 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
 
             await interaction.followup.send(
                 f"✅ Registro guardado en **{nombre_destino}**.\n"
-                f"Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.\n"
-                f"📡 Actualizando rankings...",
-                ephemeral=True
+                f"Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.",
+                ephemeral=True,
+                delete_after=6
             )
 
             asyncio.create_task(

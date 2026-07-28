@@ -1817,21 +1817,55 @@ async def ranking_automatico():
     await actualizar_rankings_secundaria()
     await actualizar_estado_evento()
 
-async def actualizar_shulker_post_registro(interaction: discord.Interaction, cantidad_int: int, nuevo_total: int):
+async def actualizar_shulker_post_registro(
+    interaction: discord.Interaction,
+    cantidad_int: int,
+    nuevo_total: int,
+    destino: str = "principal"
+):
     try:
-        await actualizar_todos_los_ranking()
-        await actualizar_panel_progreso()
+        nombres = {
+            "principal": "Isla Principal",
+            "secundaria": "Isla Secundaria",
+            "evento": "Evento"
+        }
+        nombre_destino = nombres.get(destino, destino)
 
+        colores = {
+            "principal": discord.Color.green(),
+            "secundaria": discord.Color.teal(),
+            "evento": discord.Color.gold()
+        }
+        color = colores.get(destino, discord.Color.green())
+
+        emojis = {
+            "principal": "🏝️",
+            "secundaria": "🌿",
+            "evento": "🎉"
+        }
+        emoji = emojis.get(destino, "📦")
+
+        # Actualizar rankings según destino
+        if destino == "principal":
+            await actualizar_todos_los_ranking()
+            await actualizar_panel_progreso()
+        elif destino == "secundaria":
+            await actualizar_rankings_secundaria()
+        else:
+            await actualizar_estado_evento()
+
+        # Log siempre (para los 3 destinos)
         end_channel = interaction.client.get_channel(END_CHANNEL_ID)
         if end_channel:
             embed = discord.Embed(
-                title="📦 Registro de Shulker",
+                title=f"{emoji} Registro de Shulker",
                 description=(
                     f"👤 {interaction.user.mention}\n"
+                    f"📍 Destino: **{nombre_destino}**\n"
                     f"➕ Registró: `{cantidad_int}`\n"
                     f"📊 Total hoy: `{nuevo_total}`"
                 ),
-                color=discord.Color.green(),
+                color=color,
                 timestamp=utc_now()
             )
             await end_channel.send(embed=embed)
@@ -1954,14 +1988,11 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 ephemeral=True
             )
 
-            if self.destino == "principal":
-                asyncio.create_task(
-                    actualizar_shulker_post_registro(interaction, cantidad_int, nuevo_total)
+            asyncio.create_task(
+                actualizar_shulker_post_registro(
+                    interaction, cantidad_int, nuevo_total, destino=self.destino
                 )
-            elif self.destino == "secundaria":
-                asyncio.create_task(actualizar_rankings_secundaria())
-            else:
-                asyncio.create_task(actualizar_estado_evento())
+            )
 
             print(f"✅ Registro {nombre_destino} para {username}: +{cantidad_int}")
         except Exception as e:

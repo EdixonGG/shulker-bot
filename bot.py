@@ -2025,12 +2025,20 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             }
             nombre_destino = nombres.get(self.destino, self.destino)
 
-            await interaction.followup.send(
+            msg = await interaction.followup.send(
                 f"✅ Registro guardado en **{nombre_destino}**.\n"
                 f"Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.",
-                ephemeral=True,
-                delete_after=6
+                ephemeral=True
             )
+
+            async def _borrar_exito():
+                await asyncio.sleep(6)
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+
+            asyncio.create_task(_borrar_exito())
 
             asyncio.create_task(
                 actualizar_shulker_post_registro(
@@ -2043,7 +2051,7 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             print(f"❌ Error en modal on_submit: {e}")
             try:
                 await interaction.followup.send(
-                    "❌ Ocurrió un error al guardar el registro.",
+                    f"❌ Error al guardar: `{type(e).__name__}: {e}`",
                     ephemeral=True
                 )
             except Exception:

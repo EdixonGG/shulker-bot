@@ -85,6 +85,9 @@ if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
 db = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
 db.execute("PRAGMA journal_mode=WAL;")
 db.execute("PRAGMA synchronous=NORMAL;")
+db.execute("PRAGMA temp_store=MEMORY;")
+db.execute("PRAGMA cache_size=-8000;")  # ~8MB de cache
+db.execute("PRAGMA mmap_size=268435456;")  # 256MB mmap
 db.row_factory = sqlite3.Row
 cursor = db.cursor()
 
@@ -241,6 +244,11 @@ CREATE TABLE IF NOT EXISTS shulker_evento (
     PRIMARY KEY (user_id, fecha)
 )
 """)
+
+# Índices para consultas rápidas de rankings
+for tabla in ("shulker", "shulker_secundaria", "shulker_evento", "end_aportado"):
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tabla}_fecha ON {tabla}(fecha)")
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tabla}_user_fecha ON {tabla}(user_id, fecha)")
 
 db.commit()
 
@@ -1807,6 +1815,43 @@ async def sincronizar_mensajes_revision():
 # ===============================
 # TASK
 # ===============================
+# ===============================
+# DEBOUNCE DE RANKINGS (más rápido al registrar)
+# ===============================
+_ranking_debounce_tasks: dict[str, asyncio.Task] = {}
+RANKING_DEBOUNCE_SECONDS = 2.5  # espera breve y agrupa actualizaciones
+
+async def _ejecutar_update_ranking(destino: str):
+    try:
+        if destino == "principal":
+            await actualizar_todos_los_ranking()
+            await actualizar_panel_progreso()
+        elif destino == "secundaria":
+            await actualizar_rankings_secundaria()
+        elif destino == "evento":
+            await actualizar_estado_evento()
+        elif destino == "end":
+            await actualizar_rankings_end()
+    except Exception as e:
+        print(f"❌ Error actualizando ranking ({destino}): {e}")
+
+async def schedule_ranking_update(destino: str):
+    """Agrupa actualizaciones: si hay varios registros seguidos, solo actualiza una vez."""
+    prev = _ranking_debounce_tasks.get(destino)
+    if prev and not prev.done():
+        prev.cancel()
+
+    async def _debounced():
+        try:
+            await asyncio.sleep(RANKING_DEBOUNCE_SECONDS)
+            await _ejecutar_update_ranking(destino)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"❌ Error en debounce ranking ({destino}): {e}")
+
+    _ranking_debounce_tasks[destino] = asyncio.create_task(_debounced())
+
 @tasks.loop(hours=1)
 async def ranking_automatico():
     cleanup_expired_cooldowns()
@@ -1845,16 +1890,7 @@ async def actualizar_shulker_post_registro(
         }
         emoji = emojis.get(destino, "📦")
 
-        # Actualizar rankings según destino
-        if destino == "principal":
-            await actualizar_todos_los_ranking()
-            await actualizar_panel_progreso()
-        elif destino == "secundaria":
-            await actualizar_rankings_secundaria()
-        else:
-            await actualizar_estado_evento()
-
-        # Log siempre (para los 3 destinos)
+        # 1) Log inmediato (lo que el usuario ve más rápido)
         end_channel = interaction.client.get_channel(END_CHANNEL_ID)
         if end_channel:
             embed = discord.Embed(
@@ -1869,6 +1905,9 @@ async def actualizar_shulker_post_registro(
                 timestamp=utc_now()
             )
             await end_channel.send(embed=embed)
+
+        # 2) Ranking con debounce (agrupa varios registros seguidos)
+        await schedule_ranking_update(destino)
 
     except Exception as e:
         print(f"❌ Error en actualizar_shulker_post_registro: {e}")

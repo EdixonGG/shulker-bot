@@ -28,6 +28,12 @@ END_APORTE_REVIEW_CHANNEL_ID = 1482278518552530955
 # Pon 0 si no quieres usarlo
 STAFF_LOG_CHANNEL_ID = 1462316363552133202
 
+# ===============================
+# CANALES NUEVOS (ISLA SECUNDARIA + EVENTO)
+# ===============================
+SECUNDARIA_RANKING_CHANNEL_ID = 1531562565287673856
+EVENTO_RANKING_CHANNEL_ID = 1531562510040305715
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
@@ -36,6 +42,12 @@ PUBLIC_EVIDENCE_DELETE_SECONDS = 60
 
 TARGET_NEXT_LEVEL = 250_000_000
 DAILY_SHULKER_GOAL = 120
+
+# ===============================
+# EVENTO ACTUAL
+# ===============================
+EVENTO_START_DATE = date(2026, 7, 25)
+EVENTO_GOAL_PVS = 40
 
 # ===============================
 # ZONA HORARIA
@@ -51,6 +63,8 @@ LEVELS_PER_STACK = 64 * LEVELS_PER_BLOCK          # 576
 LEVELS_PER_SHULKER = 27 * LEVELS_PER_STACK        # 15552
 SHULKERS_PER_PV = 27
 LEVELS_PER_PV = SHULKERS_PER_PV * LEVELS_PER_SHULKER  # 419904
+
+EVENTO_GOAL_SHULKERS = EVENTO_GOAL_PVS * SHULKERS_PER_PV  # 1080
 
 DEFAULT_BASE_LEVEL = 42127075
 
@@ -204,6 +218,27 @@ CREATE TABLE IF NOT EXISTS staff_logs (
     amount INTEGER,
     reason TEXT,
     created_at TEXT NOT NULL
+)
+""")
+
+# Tablas separadas para Isla Secundaria y Evento
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS shulker_secundaria (
+    user_id INTEGER,
+    username TEXT,
+    fecha TEXT,
+    total INTEGER,
+    PRIMARY KEY (user_id, fecha)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS shulker_evento (
+    user_id INTEGER,
+    username TEXT,
+    fecha TEXT,
+    total INTEGER,
+    PRIMARY KEY (user_id, fecha)
 )
 """)
 
@@ -365,6 +400,16 @@ def total_shulkers_all_time() -> int:
 def total_shulkers_today() -> int:
     hoy = local_date_str()
     cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker WHERE fecha = ?", (hoy,))
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+def total_evento_shulkers() -> int:
+    cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker_evento")
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+def total_secundaria_periodo(where_sql: str, params: tuple) -> int:
+    cursor.execute(f"SELECT COALESCE(SUM(total), 0) AS total FROM shulker_secundaria WHERE {where_sql}", params)
     row = cursor.fetchone()
     return int(row["total"] or 0)
 
@@ -1124,6 +1169,166 @@ async def actualizar_todos_los_ranking():
         print(f"❌ Error en actualizar_todos_los_ranking: {e}")
 
 # ===============================
+# RANKINGS ISLA SECUNDARIA
+# ===============================
+async def actualizar_rankings_secundaria():
+    try:
+        channel = bot.get_channel(SECUNDARIA_RANKING_CHANNEL_ID)
+        if not channel:
+            print("⚠️ No se encontró SECUNDARIA_RANKING_CHANNEL_ID")
+            return
+
+        hoy = today_local()
+        inicio_mes = clamp_start(hoy.replace(day=1))
+        inicio_semana_natural = clamp_start(hoy - timedelta(days=hoy.weekday()))
+        inicio_semana = max(inicio_semana_natural, inicio_mes)
+        inicio_mes_pasado, inicio_mes_actual, fin_mes_pasado = obtener_rango_mes_pasado()
+
+        cursor.execute("""
+            SELECT username, SUM(total) as s
+            FROM shulker_secundaria
+            WHERE fecha >= ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            LIMIT 5
+        """, (str(inicio_mes),))
+        mensual = cursor.fetchall()
+        total_mensual = total_secundaria_periodo("fecha >= ?", (str(inicio_mes),))
+
+        cursor.execute("""
+            SELECT username, SUM(total) as s
+            FROM shulker_secundaria
+            WHERE fecha >= ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            LIMIT 5
+        """, (str(inicio_semana),))
+        semanal = cursor.fetchall()
+        total_semanal = total_secundaria_periodo("fecha >= ?", (str(inicio_semana),))
+
+        cursor.execute("""
+            SELECT username, SUM(total) as s
+            FROM shulker_secundaria
+            WHERE fecha >= ? AND fecha < ?
+            GROUP BY user_id
+            ORDER BY s DESC
+            LIMIT 5
+        """, (str(inicio_mes_pasado), str(inicio_mes_actual)))
+        mensual_pasado = cursor.fetchall()
+        total_mensual_pasado = await total_periodo_rango(
+            "shulker_secundaria",
+            str(inicio_mes_pasado),
+            str(inicio_mes_actual)
+        )
+
+        embed_mensual = await crear_embed_ranking(
+            "ISLA SECUNDARIA • TEMPORADA ACTUAL", "🏝️", discord.Color.teal(),
+            mensual, "Mes en curso", total_mensual
+        )
+        embed_semanal = await crear_embed_ranking(
+            "ISLA SECUNDARIA • GUERRA SEMANAL", "⚔️", discord.Color.dark_teal(),
+            semanal, f"Desde {inicio_semana}", total_semanal
+        )
+        embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
+            "ISLA SECUNDARIA • LEYENDAS DEL MES PASADO", "👾", discord.Color.dark_green(),
+            mensual_pasado, f"{inicio_mes_pasado} a {fin_mes_pasado}", total_mensual_pasado
+        )
+
+        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+            "ranking_secundaria_mes_pasado",
+            "ranking_secundaria_mensual",
+            "ranking_secundaria_semanal",
+        ])
+
+        await mensajes["ranking_secundaria_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
+        await mensajes["ranking_secundaria_mensual"].edit(content=None, embed=embed_mensual)
+        await mensajes["ranking_secundaria_semanal"].edit(content=None, embed=embed_semanal)
+
+        await limpiar_mensajes_duplicados_por_titulo(
+            channel,
+            [embed_mes_pasado.title, embed_mensual.title, embed_semanal.title],
+            keep_message_ids=[
+                mensajes["ranking_secundaria_mes_pasado"].id,
+                mensajes["ranking_secundaria_mensual"].id,
+                mensajes["ranking_secundaria_semanal"].id,
+            ]
+        )
+        print("✅ Rankings Isla Secundaria actualizados")
+    except Exception as e:
+        print(f"❌ Error en actualizar_rankings_secundaria: {e}")
+
+# ===============================
+# ESTADO ACTUAL DEL EVENTO
+# ===============================
+async def actualizar_estado_evento():
+    try:
+        channel = bot.get_channel(EVENTO_RANKING_CHANNEL_ID)
+        if not channel:
+            print("⚠️ No se encontró EVENTO_RANKING_CHANNEL_ID")
+            return
+
+        total = total_evento_shulkers()
+        faltan = max(0, EVENTO_GOAL_SHULKERS - total)
+        pv_actual, sh_actual = shulkers_a_pv_y_shulkers(total)
+        pv_faltan, sh_faltan = shulkers_a_pv_y_shulkers(faltan)
+        pct = (total / EVENTO_GOAL_SHULKERS) * 100 if EVENTO_GOAL_SHULKERS else 0
+        bar = barra_meta(total, EVENTO_GOAL_SHULKERS, largo=20)
+
+        cursor.execute("""
+            SELECT username, SUM(total) as s
+            FROM shulker_evento
+            GROUP BY user_id
+            ORDER BY s DESC
+            LIMIT 10
+        """)
+        top = cursor.fetchall()
+
+        if not top:
+            ranking_text = "_Aún nadie ha registrado para el evento_"
+        else:
+            maximo = int(top[0]["s"] or 0)
+            lines = []
+            for i, row in enumerate(top, start=1):
+                user = cortar_nombre(row["username"], 20)
+                t = int(row["s"] or 0)
+                medalla = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"`#{i}`"
+                porcentaje = int(round((t / maximo) * 100)) if maximo > 0 else 0
+                bar_user = barra_progreso(t, maximo, largo=10)
+                lines.append(f"{medalla} **{user}** — `{t}` shulkers ({porcentaje}%)\n{bar_user}")
+            ranking_text = "\n\n".join(lines)
+
+        embed = discord.Embed(
+            title="🎉 ESTADO ACTUAL DEL EVENTO",
+            color=discord.Color.gold(),
+            timestamp=utc_now()
+        )
+
+        embed.add_field(
+            name="📦 Meta del Evento",
+            value=(
+                f"**{EVENTO_GOAL_PVS} PVs** (`{EVENTO_GOAL_SHULKERS}` shulkers)\n"
+                f"`{bar}` `{pct:.1f}%`\n"
+                f"**Registrado:** `{total}` shulkers (`{pv_actual}` PVs + `{sh_actual}`)\n"
+                f"**Faltan:** `{faltan}` shulkers (`{pv_faltan}` PVs + `{sh_faltan}`)"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🏆 Top del Evento",
+            value=ranking_text,
+            inline=False
+        )
+
+        embed.set_footer(text=f"Evento desde {EVENTO_START_DATE} | Hora Chile")
+
+        msg = await obtener_mensaje_fijo(channel, "estado_evento")
+        await msg.edit(content=None, embed=embed)
+        print("✅ Estado del Evento actualizado")
+    except Exception as e:
+        print(f"❌ Error en actualizar_estado_evento: {e}")
+
+# ===============================
 # RANKINGS END APORTADA
 # ===============================
 async def total_periodo_end(where_sql: str, params: tuple) -> int:
@@ -1495,7 +1700,13 @@ async def publicar_boton_shulker():
             content=None,
             embed=discord.Embed(
                 title="📦 Registro de Shulker",
-                description="Presiona el botón para registrar.",
+                description=(
+                    "Presiona el botón para registrar.\n\n"
+                    "Al pulsar podrás elegir:\n"
+                    "🏝️ **Isla Principal**\n"
+                    "🌿 **Isla Secundaria**\n"
+                    "🎉 **Evento**"
+                ),
                 color=discord.Color.green(),
                 timestamp=utc_now()
             ),
@@ -1603,6 +1814,8 @@ async def ranking_automatico():
     await actualizar_todos_los_ranking()
     await actualizar_panel_progreso()
     await actualizar_rankings_end()
+    await actualizar_rankings_secundaria()
+    await actualizar_estado_evento()
 
 async def actualizar_shulker_post_registro(interaction: discord.Interaction, cantidad_int: int, nuevo_total: int):
     try:
@@ -1627,15 +1840,59 @@ async def actualizar_shulker_post_registro(interaction: discord.Interaction, can
         print(f"❌ Error en actualizar_shulker_post_registro: {e}")
 
 # ===============================
-# MODAL SHULKER NORMAL
+# MENÚ DE DESTINO + MODAL SHULKER
 # ===============================
+class DestinoSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="Isla Principal",
+                value="principal",
+                emoji="🏝️",
+                description="Se suma al ranking principal"
+            ),
+            discord.SelectOption(
+                label="Isla Secundaria",
+                value="secundaria",
+                emoji="🌿",
+                description="Se suma al ranking de la isla secundaria"
+            ),
+            discord.SelectOption(
+                label="Evento",
+                value="evento",
+                emoji="🎉",
+                description="Se suma al evento actual (40 PVs)"
+            ),
+        ]
+        super().__init__(
+            placeholder="¿Dónde quieres registrar las shulkers?",
+            options=options,
+            min_values=1,
+            max_values=1,
+            custom_id="destino_shulker_select_v1"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        destino = self.values[0]
+        await interaction.response.send_modal(ShulkerModal(destino=destino))
+
+
+class DestinoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.add_item(DestinoSelect())
+
+
 class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
     cantidad = discord.ui.TextInput(label="¿Cuántas shulker colocaste?", required=True)
+
+    def __init__(self, destino: str = "principal"):
+        super().__init__()
+        self.destino = destino
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             user_id = interaction.user.id
-
             await interaction.response.defer(ephemeral=True)
 
             restante = get_cooldown_remaining("shulker_normal", user_id)
@@ -1657,8 +1914,15 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             hoy = local_date_str()
             username = interaction.user.display_name
 
-            cursor.execute("""
-                INSERT INTO shulker (user_id, username, fecha, total)
+            if self.destino == "principal":
+                tabla = "shulker"
+            elif self.destino == "secundaria":
+                tabla = "shulker_secundaria"
+            else:
+                tabla = "shulker_evento"
+
+            cursor.execute(f"""
+                INSERT INTO {tabla} (user_id, username, fecha, total)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(user_id, fecha)
                 DO UPDATE SET
@@ -1670,24 +1934,36 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             set_cooldown("shulker_normal", user_id, COOLDOWN_SECONDS)
 
             cursor.execute(
-                "SELECT total FROM shulker WHERE user_id = ? AND fecha = ?",
+                f"SELECT total FROM {tabla} WHERE user_id = ? AND fecha = ?",
                 (user_id, hoy)
             )
             row = cursor.fetchone()
             nuevo_total = int(row["total"] or 0) if row else cantidad_int
 
+            nombres = {
+                "principal": "Isla Principal",
+                "secundaria": "Isla Secundaria",
+                "evento": "Evento"
+            }
+            nombre_destino = nombres.get(self.destino, self.destino)
+
             await interaction.followup.send(
-                f"✅ Registro guardado al instante. Añadiste `{cantidad_int}` shulkers. "
-                f"Total de hoy: `{nuevo_total}`.\n"
-                f"📡 Actualizando rankings en segundo plano...",
+                f"✅ Registro guardado en **{nombre_destino}**.\n"
+                f"Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.\n"
+                f"📡 Actualizando rankings...",
                 ephemeral=True
             )
 
-            asyncio.create_task(
-                actualizar_shulker_post_registro(interaction, cantidad_int, nuevo_total)
-            )
+            if self.destino == "principal":
+                asyncio.create_task(
+                    actualizar_shulker_post_registro(interaction, cantidad_int, nuevo_total)
+                )
+            elif self.destino == "secundaria":
+                asyncio.create_task(actualizar_rankings_secundaria())
+            else:
+                asyncio.create_task(actualizar_estado_evento())
 
-            print(f"✅ Registro guardado para {username}: +{cantidad_int}")
+            print(f"✅ Registro {nombre_destino} para {username}: +{cantidad_int}")
         except Exception as e:
             print(f"❌ Error en modal on_submit: {e}")
             try:
@@ -1890,7 +2166,7 @@ class RejectReasonModal(discord.ui.Modal, title="Rechazar solicitud"):
                 )
 
 # ===============================
-# BOTÓN SHULKER NORMAL
+# BOTÓN SHULKER (AHORA CON MENÚ)
 # ===============================
 class ShulkerButton(discord.ui.View):
     def __init__(self):
@@ -1904,13 +2180,17 @@ class ShulkerButton(discord.ui.View):
     )
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            await interaction.response.send_modal(ShulkerModal())
+            await interaction.response.send_message(
+                "📦 **¿Dónde quieres registrar las shulkers?**",
+                view=DestinoView(),
+                ephemeral=True
+            )
             print(f"✅ Botón pulsado por {interaction.user}")
         except Exception as e:
-            print(f"❌ Error al abrir modal: {e}")
+            print(f"❌ Error al abrir menú: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ No se pudo abrir el formulario.",
+                    "❌ No se pudo abrir el menú.",
                     ephemeral=True
                 )
 
@@ -2405,6 +2685,8 @@ async def publicarbotones(ctx):
 async def publicarrankings(ctx):
     await actualizar_todos_los_ranking()
     await actualizar_rankings_end()
+    await actualizar_rankings_secundaria()
+    await actualizar_estado_evento()
     await ctx.reply("✅ Rankings republicados/actualizados correctamente.", mention_author=False)
 
 @bot.command(name="publicarpanel")
@@ -2464,6 +2746,71 @@ async def stafflogs(ctx, limite: int = 10):
     )
     await ctx.reply(embed=embed, mention_author=False)
 
+@bot.command(name="migrarevento")
+@commands.has_permissions(administrator=True)
+async def migrarevento(ctx):
+    """Mueve registros de Isla Principal desde el 25 de julio 2026 al Evento y los borra de Principal."""
+    start = str(EVENTO_START_DATE)
+
+    cursor.execute("""
+        SELECT user_id, username, fecha, total
+        FROM shulker
+        WHERE fecha >= ?
+    """, (start,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        await ctx.reply("ℹ️ No hay registros desde el 25 de julio para migrar.", mention_author=False)
+        return
+
+    movidos = 0
+    for r in rows:
+        cursor.execute("""
+            INSERT INTO shulker_evento (user_id, username, fecha, total)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, fecha)
+            DO UPDATE SET
+                total = total + excluded.total,
+                username = excluded.username
+        """, (r["user_id"], r["username"], r["fecha"], r["total"]))
+        movidos += 1
+
+    cursor.execute("DELETE FROM shulker WHERE fecha >= ?", (start,))
+    db.commit()
+
+    await actualizar_estado_evento()
+    await actualizar_todos_los_ranking()
+
+    await ctx.reply(
+        f"✅ Migración completada.\n"
+        f"Se movieron `{movidos}` registros (desde {start}) a **Evento**.\n"
+        f"También se eliminaron de Isla Principal.",
+        mention_author=False
+    )
+
+@bot.command(name="publicarrankingsnuevos")
+@commands.has_permissions(administrator=True)
+async def publicarrankingsnuevos(ctx):
+    await actualizar_rankings_secundaria()
+    await actualizar_estado_evento()
+    await ctx.reply("✅ Rankings de Secundaria y Evento actualizados.", mention_author=False)
+
+@bot.command(name="setmetaevento")
+@commands.has_permissions(administrator=True)
+async def setmetaevento(ctx, pvs: int):
+    """Cambia la meta del evento en PVs (ejemplo: !setmetaevento 40)."""
+    global EVENTO_GOAL_PVS, EVENTO_GOAL_SHULKERS
+    if pvs <= 0:
+        await ctx.reply("❌ La meta debe ser un número positivo.", mention_author=False)
+        return
+    EVENTO_GOAL_PVS = pvs
+    EVENTO_GOAL_SHULKERS = pvs * SHULKERS_PER_PV
+    await actualizar_estado_evento()
+    await ctx.reply(
+        f"✅ Meta del evento actualizada a **{pvs} PVs** (`{EVENTO_GOAL_SHULKERS}` shulkers).",
+        mention_author=False
+    )
+
 # ===============================
 # READY
 # ===============================
@@ -2474,7 +2821,8 @@ async def on_ready():
     print(f"📌 Start date: {BOT_START_DATE}")
     print(f"🕒 Hora Chile: {local_datetime_str()}")
     print(f"✅ LEVELS_PER_SHULKER: {LEVELS_PER_SHULKER} | LEVELS_PER_PV: {LEVELS_PER_PV}")
-    print("✅ BOT VERSION NUEVA CARGADA")
+    print(f"🎉 Evento: meta {EVENTO_GOAL_PVS} PVs ({EVENTO_GOAL_SHULKERS} shulkers) desde {EVENTO_START_DATE}")
+    print("✅ BOT VERSION CON MENÚ DESTINO + EVENTO + SECUNDARIA CARGADA")
 
     cleanup_expired_cooldowns()
     cleanup_expired_pending_end()
@@ -2489,6 +2837,8 @@ async def on_ready():
     await actualizar_todos_los_ranking()
     await actualizar_panel_progreso()
     await actualizar_rankings_end()
+    await actualizar_rankings_secundaria()
+    await actualizar_estado_evento()
     await sincronizar_mensajes_revision()
 
 # ===============================

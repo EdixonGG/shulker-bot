@@ -2717,6 +2717,157 @@ async def on_message(message: discord.Message):
 # ===============================
 # COMANDOS
 # ===============================
+def _tabla_por_destino(destino: str) -> str | None:
+    d = (destino or "").strip().lower()
+    if d in ("principal", "isla", "main"):
+        return "shulker"
+    if d in ("secundaria", "segunda", "sec"):
+        return "shulker_secundaria"
+    if d in ("evento", "event"):
+        return "shulker_evento"
+    return None
+
+
+@bot.command(name="vershulker")
+@commands.has_permissions(administrator=True)
+async def vershulker(ctx, member: discord.Member, destino: str = "principal"):
+    """Ver totales de shulkers de un usuario. Uso: !vershulker @user [principal|secundaria|evento]"""
+    tabla = _tabla_por_destino(destino)
+    if not tabla:
+        await ctx.reply(
+            "❌ Destino inválido. Usa: `principal`, `secundaria` o `evento`.",
+            mention_author=False
+        )
+        return
+
+    cursor.execute(
+        f"""
+        SELECT fecha, total
+        FROM {tabla}
+        WHERE user_id = ?
+        ORDER BY fecha DESC
+        LIMIT 15
+        """,
+        (member.id,)
+    )
+    rows = cursor.fetchall()
+
+    cursor.execute(
+        f"SELECT COALESCE(SUM(total), 0) AS s FROM {tabla} WHERE user_id = ?",
+        (member.id,)
+    )
+    total = int(cursor.fetchone()["s"] or 0)
+
+    if not rows:
+        await ctx.reply(
+            f"ℹ️ {member.mention} no tiene registros en **{destino}**.",
+            mention_author=False
+        )
+        return
+
+    lineas = [f"`{r['fecha']}` → **{int(r['total'])}** shulkers" for r in rows]
+    embed = discord.Embed(
+        title=f"📦 Shulkers de {member.display_name}",
+        description="\n".join(lineas),
+        color=discord.Color.blue(),
+        timestamp=utc_now()
+    )
+    embed.add_field(name="Destino", value=f"`{destino}`", inline=True)
+    embed.add_field(name="Total histórico", value=f"`{total}`", inline=True)
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="quitarshulker")
+@commands.has_permissions(administrator=True)
+async def quitarshulker(
+    ctx,
+    member: discord.Member,
+    cantidad: int,
+    destino: str = "principal",
+    fecha: str | None = None
+):
+    """
+    Quita shulkers reportados de más.
+    Uso: !quitarshulker @user cantidad [principal|secundaria|evento] [YYYY-MM-DD]
+    Si no pones fecha, usa el día de hoy (hora Chile).
+    """
+    if cantidad <= 0:
+        await ctx.reply("❌ La cantidad debe ser mayor que 0.", mention_author=False)
+        return
+
+    tabla = _tabla_por_destino(destino)
+    if not tabla:
+        await ctx.reply(
+            "❌ Destino inválido. Usa: `principal`, `secundaria` o `evento`.\n"
+            "Ejemplo: `!quitarshulker @user 10 principal`",
+            mention_author=False
+        )
+        return
+
+    fecha_uso = fecha or local_date_str()
+    try:
+        date.fromisoformat(fecha_uso)
+    except ValueError:
+        await ctx.reply(
+            "❌ Fecha inválida. Usa formato `YYYY-MM-DD` (ejemplo: `2026-07-30`).",
+            mention_author=False
+        )
+        return
+
+    cursor.execute(
+        f"SELECT total FROM {tabla} WHERE user_id = ? AND fecha = ?",
+        (member.id, fecha_uso)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        await ctx.reply(
+            f"ℹ️ {member.mention} no tiene registro en **{destino}** el día `{fecha_uso}`.",
+            mention_author=False
+        )
+        return
+
+    actual = int(row["total"] or 0)
+    if cantidad > actual:
+        await ctx.reply(
+            f"⚠️ Solo tiene `{actual}` ese día. No se puede quitar `{cantidad}`.\n"
+            f"Usa `!vershulker @{member.display_name} {destino}` para ver sus registros.",
+            mention_author=False
+        )
+        return
+
+    nuevo = actual - cantidad
+
+    if nuevo == 0:
+        cursor.execute(
+            f"DELETE FROM {tabla} WHERE user_id = ? AND fecha = ?",
+            (member.id, fecha_uso)
+        )
+    else:
+        cursor.execute(
+            f"UPDATE {tabla} SET total = ? WHERE user_id = ? AND fecha = ?",
+            (nuevo, member.id, fecha_uso)
+        )
+    db.commit()
+
+    await ctx.reply(
+        f"✅ Corregido **{destino}** de {member.mention}\n"
+        f"📅 Fecha: `{fecha_uso}`\n"
+        f"➖ Quitado: `{cantidad}`\n"
+        f"📊 Antes: `{actual}` → Ahora: `{nuevo}`",
+        mention_author=False
+    )
+
+    # Refrescar rankings del destino
+    if tabla == "shulker":
+        await actualizar_todos_los_ranking()
+        await actualizar_panel_progreso()
+    elif tabla == "shulker_secundaria":
+        await actualizar_rankings_secundaria()
+    else:
+        await actualizar_estado_evento()
+
+
 @bot.command(name="setnivel")
 @commands.has_permissions(administrator=True)
 async def setnivel(ctx, nivel: int):

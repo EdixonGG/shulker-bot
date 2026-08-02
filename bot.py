@@ -67,6 +67,7 @@ LEVELS_PER_PV = SHULKERS_PER_PV * LEVELS_PER_SHULKER  # 419904
 EVENTO_GOAL_SHULKERS = EVENTO_GOAL_PVS * SHULKERS_PER_PV  # 1080
 
 DEFAULT_BASE_LEVEL = 42127075
+DEFAULT_BASE_LEVEL_SECUNDARIA = 0  # Calibrar con !setnivel <nivel> secundaria
 
 # ===============================
 # DB PERSISTENTE (RAILWAY)
@@ -413,6 +414,20 @@ def total_shulkers_today() -> int:
 
 def total_evento_shulkers() -> int:
     cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker_evento")
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+def total_secundaria_all_time() -> int:
+    cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker_secundaria")
+    row = cursor.fetchone()
+    return int(row["total"] or 0)
+
+def total_secundaria_today() -> int:
+    hoy = local_date_str()
+    cursor.execute(
+        "SELECT COALESCE(SUM(total), 0) AS total FROM shulker_secundaria WHERE fecha = ?",
+        (hoy,)
+    )
     row = cursor.fetchone()
     return int(row["total"] or 0)
 
@@ -825,17 +840,87 @@ def construir_embed_revision(request_row, reviewer_name: str | None = None):
     return embed
 
 # ===============================
-# PANEL PRIVADO
+# PANEL PROGRESO (ISLA PRINCIPAL + SECUNDARIA)
 # ===============================
 def asegurar_base_progreso_si_falta():
-    base_level = get_progress_value("base_level", "")
-    if base_level:
-        return
+    if not get_progress_value("base_level", ""):
+        set_progress_value("base_level", str(DEFAULT_BASE_LEVEL))
+        set_progress_value("base_shulkers", str(total_shulkers_all_time()))
+        set_progress_value("base_date", local_date_str())
+        print(f"✅ Base progreso Principal creada: {DEFAULT_BASE_LEVEL:,}")
 
-    set_progress_value("base_level", str(DEFAULT_BASE_LEVEL))
-    set_progress_value("base_shulkers", str(total_shulkers_all_time()))
-    set_progress_value("base_date", local_date_str())
-    print(f"✅ Base progreso creada automáticamente: {DEFAULT_BASE_LEVEL:,}")
+    if not get_progress_value("base_level_secundaria", ""):
+        set_progress_value("base_level_secundaria", str(DEFAULT_BASE_LEVEL_SECUNDARIA))
+        set_progress_value("base_shulkers_secundaria", str(total_secundaria_all_time()))
+        set_progress_value("base_date_secundaria", local_date_str())
+        print(f"✅ Base progreso Secundaria creada: {DEFAULT_BASE_LEVEL_SECUNDARIA:,}")
+
+
+def _calcular_progreso_isla(base_level: int, base_shulkers: int, total_sh: int, hoy_sh: int):
+    nuevos_sh = max(0, total_sh - base_shulkers)
+    niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
+    nivel_estimado = base_level + niveles_ganados
+    faltan_meta = max(0, TARGET_NEXT_LEVEL - nivel_estimado)
+    shulkers_meta = (faltan_meta + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
+    pv_meta, sh_meta = shulkers_a_pv_y_shulkers(shulkers_meta)
+    faltan_diario = max(0, DAILY_SHULKER_GOAL - hoy_sh)
+    pct_meta = (nivel_estimado / TARGET_NEXT_LEVEL) * 100 if TARGET_NEXT_LEVEL else 0
+    pct_dia = (hoy_sh / DAILY_SHULKER_GOAL) * 100 if DAILY_SHULKER_GOAL else 0
+    return {
+        "nuevos_sh": nuevos_sh,
+        "niveles_ganados": niveles_ganados,
+        "nivel_estimado": nivel_estimado,
+        "pv_meta": pv_meta,
+        "sh_meta": sh_meta,
+        "faltan_diario": faltan_diario,
+        "pct_meta": pct_meta,
+        "pct_dia": pct_dia,
+        "bar_meta": barra_meta(nivel_estimado, TARGET_NEXT_LEVEL, largo=20),
+        "bar_dia": barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20),
+        "hoy_sh": hoy_sh,
+    }
+
+
+def _embed_progreso_isla(
+    titulo: str,
+    color: discord.Color,
+    base_level: int,
+    base_date: str,
+    datos: dict,
+):
+    embed = discord.Embed(
+        title=titulo,
+        color=color,
+        timestamp=utc_now()
+    )
+    embed.add_field(
+        name="🔹 NIVEL ACTUAL",
+        value=f"**{datos['nivel_estimado']:,}**",
+        inline=False
+    )
+    embed.add_field(
+        name="📦 META DIARIA",
+        value=(
+            f"`{datos['hoy_sh']:,} / {DAILY_SHULKER_GOAL:,} shulkers`\n"
+            f"`{datos['bar_dia']}` `{datos['pct_dia']:.1f}%`\n"
+            f"Faltan: `{datos['faltan_diario']:,}`"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🏆 PRÓXIMA META GLOBAL",
+        value=(
+            f"`{datos['nivel_estimado']:,} / {TARGET_NEXT_LEVEL:,}`\n"
+            f"`{datos['bar_meta']}` `{datos['pct_meta']:.1f}%`\n"
+            f"Faltan: `{datos['pv_meta']}` PVS + `{datos['sh_meta']}` SHULKERS"
+        ),
+        inline=False
+    )
+    embed.set_footer(
+        text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'} | Hora Chile"
+    )
+    return embed
+
 
 async def actualizar_panel_progreso():
     try:
@@ -847,64 +932,61 @@ async def actualizar_panel_progreso():
             print("⚠️ No se encontró PROGRESS_CHANNEL_ID")
             return
 
-        base_level = int(get_progress_value("base_level", "0") or 0)
-        base_shulkers = int(get_progress_value("base_shulkers", "0") or 0)
-        base_date = get_progress_value("base_date", "")
-
-        total_sh = total_shulkers_all_time()
-        hoy_sh = total_shulkers_today()
-
-        nuevos_sh = max(0, total_sh - base_shulkers)
-        niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
-        nivel_estimado = base_level + niveles_ganados
-        faltan_meta = max(0, TARGET_NEXT_LEVEL - nivel_estimado)
-        shulkers_meta = (faltan_meta + LEVELS_PER_SHULKER - 1) // LEVELS_PER_SHULKER if LEVELS_PER_SHULKER > 0 else 0
-        pv_meta, sh_meta = shulkers_a_pv_y_shulkers(shulkers_meta)
-
-        faltan_diario = max(0, DAILY_SHULKER_GOAL - hoy_sh)
-
-        pct_meta = (nivel_estimado / TARGET_NEXT_LEVEL) * 100 if TARGET_NEXT_LEVEL else 0
-        pct_dia = (hoy_sh / DAILY_SHULKER_GOAL) * 100 if DAILY_SHULKER_GOAL else 0
-
-        bar_meta_global = barra_meta(nivel_estimado, TARGET_NEXT_LEVEL, largo=20)
-        bar_dia = barra_meta(hoy_sh, DAILY_SHULKER_GOAL, largo=20)
-
-        embed = discord.Embed(
-            title="🏝️ PROGRESO DE LA ISLA (PANEL NUEVO)",
-            color=discord.Color.dark_teal(),
-            timestamp=utc_now()
+        # —— Isla Principal ——
+        base_level_p = int(get_progress_value("base_level", "0") or 0)
+        base_shulkers_p = int(get_progress_value("base_shulkers", "0") or 0)
+        base_date_p = get_progress_value("base_date", "")
+        datos_p = _calcular_progreso_isla(
+            base_level_p,
+            base_shulkers_p,
+            total_shulkers_all_time(),
+            total_shulkers_today(),
+        )
+        embed_p = _embed_progreso_isla(
+            "🏝️ ISLA PRINCIPAL — PROGRESO",
+            discord.Color.dark_teal(),
+            base_level_p,
+            base_date_p,
+            datos_p,
         )
 
-        embed.add_field(
-            name="🔹 NIVEL ACTUAL",
-            value=f"**{nivel_estimado:,}**",
-            inline=False
+        # —— Isla Secundaria ——
+        base_level_s = int(get_progress_value("base_level_secundaria", "0") or 0)
+        base_shulkers_s = int(get_progress_value("base_shulkers_secundaria", "0") or 0)
+        base_date_s = get_progress_value("base_date_secundaria", "")
+        datos_s = _calcular_progreso_isla(
+            base_level_s,
+            base_shulkers_s,
+            total_secundaria_all_time(),
+            total_secundaria_today(),
+        )
+        embed_s = _embed_progreso_isla(
+            "🌿 ISLA SECUNDARIA — PROGRESO",
+            discord.Color.teal(),
+            base_level_s,
+            base_date_s,
+            datos_s,
         )
 
-        embed.add_field(
-            name="📦 META DIARIA",
-            value=(
-                f"`{hoy_sh:,} / {DAILY_SHULKER_GOAL:,} shulkers`\n"
-                f"`{bar_dia}` `{pct_dia:.1f}%`\n"
-                f"Faltan: `{faltan_diario:,}`"
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🏆 PRÓXIMA META GLOBAL",
-            value=(
-                f"`{nivel_estimado:,} / {TARGET_NEXT_LEVEL:,}`\n"
-                f"`{bar_meta_global}` `{pct_meta:.1f}%`\n"
-                f"Faltan: `{pv_meta}` PVS + `{sh_meta}` SHULKERS"
-            ),
-            inline=False
-        )
+        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+            "panel_progreso_principal",
+            "panel_progreso_secundaria",
+        ])
+        await mensajes["panel_progreso_principal"].edit(content=None, embed=embed_p)
+        await mensajes["panel_progreso_secundaria"].edit(content=None, embed=embed_s)
 
-        embed.set_footer(text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'} | Hora Chile")
+        # Limpia el panel viejo de una sola isla si existía
+        await eliminar_mensaje_fijo_si_existe(channel, "panel_progreso")
 
-        msg = await obtener_mensaje_fijo(channel, "panel_progreso")
-        await msg.edit(content=None, embed=embed)
-        print("✅ Panel de progreso actualizado")
+        await limpiar_mensajes_duplicados_por_titulo(
+            channel,
+            [embed_p.title, embed_s.title],
+            keep_message_ids=[
+                mensajes["panel_progreso_principal"].id,
+                mensajes["panel_progreso_secundaria"].id,
+            ],
+        )
+        print("✅ Paneles de progreso (Principal + Secundaria) actualizados")
     except Exception as e:
         print(f"❌ Error en actualizar_panel_progreso: {e}")
 
@@ -1828,6 +1910,7 @@ async def _ejecutar_update_ranking(destino: str):
             await actualizar_panel_progreso()
         elif destino == "secundaria":
             await actualizar_rankings_secundaria()
+            await actualizar_panel_progreso()
         elif destino == "evento":
             await actualizar_estado_evento()
         elif destino == "end":
@@ -2864,37 +2947,78 @@ async def quitarshulker(
         await actualizar_panel_progreso()
     elif tabla == "shulker_secundaria":
         await actualizar_rankings_secundaria()
+        await actualizar_panel_progreso()
     else:
         await actualizar_estado_evento()
 
 
 @bot.command(name="setnivel")
 @commands.has_permissions(administrator=True)
-async def setnivel(ctx, nivel: int):
-    set_progress_value("base_level", str(nivel))
-    set_progress_value("base_shulkers", str(total_shulkers_all_time()))
-    set_progress_value("base_date", local_date_str())
+async def setnivel(ctx, nivel: int, destino: str = "principal"):
+    """
+    Fija el nivel base de una isla y recalibra el progreso.
+    Uso: !setnivel 17753228
+         !setnivel 500000 secundaria
+    """
+    d = (destino or "principal").strip().lower()
+    if d in ("principal", "isla", "main"):
+        set_progress_value("base_level", str(nivel))
+        set_progress_value("base_shulkers", str(total_shulkers_all_time()))
+        set_progress_value("base_date", local_date_str())
+        nombre = "Isla Principal"
+    elif d in ("secundaria", "segunda", "sec"):
+        set_progress_value("base_level_secundaria", str(nivel))
+        set_progress_value("base_shulkers_secundaria", str(total_secundaria_all_time()))
+        set_progress_value("base_date_secundaria", local_date_str())
+        nombre = "Isla Secundaria"
+    else:
+        await ctx.reply(
+            "❌ Destino inválido. Usa `principal` o `secundaria`.\n"
+            "Ejemplo: `!setnivel 500000 secundaria`",
+            mention_author=False
+        )
+        return
+
     await ctx.reply(
-        f"✅ Nivel base fijado en `{nivel:,}` y progreso recalibrado.",
+        f"✅ Nivel base de **{nombre}** fijado en `{nivel:,}` y progreso recalibrado.",
         mention_author=False
     )
     await actualizar_panel_progreso()
 
+
 @bot.command(name="estadoisla")
 @commands.has_permissions(administrator=True)
-async def estadoisla(ctx):
-    base_level = int(get_progress_value("base_level", "0") or 0)
-    base_shulkers = int(get_progress_value("base_shulkers", "0") or 0)
-    base_date = get_progress_value("base_date", "sin fecha")
+async def estadoisla(ctx, destino: str = "principal"):
+    """Muestra el estado de una isla. Uso: !estadoisla [principal|secundaria]"""
+    d = (destino or "principal").strip().lower()
+    if d in ("principal", "isla", "main"):
+        base_level = int(get_progress_value("base_level", "0") or 0)
+        base_shulkers = int(get_progress_value("base_shulkers", "0") or 0)
+        base_date = get_progress_value("base_date", "sin fecha")
+        total_sh = total_shulkers_all_time()
+        nombre = "Isla Principal"
+        color = discord.Color.dark_teal()
+    elif d in ("secundaria", "segunda", "sec"):
+        base_level = int(get_progress_value("base_level_secundaria", "0") or 0)
+        base_shulkers = int(get_progress_value("base_shulkers_secundaria", "0") or 0)
+        base_date = get_progress_value("base_date_secundaria", "sin fecha")
+        total_sh = total_secundaria_all_time()
+        nombre = "Isla Secundaria"
+        color = discord.Color.teal()
+    else:
+        await ctx.reply(
+            "❌ Destino inválido. Usa `principal` o `secundaria`.",
+            mention_author=False
+        )
+        return
 
-    total_sh = total_shulkers_all_time()
     nuevos_sh = max(0, total_sh - base_shulkers)
     niveles_ganados = nuevos_sh * LEVELS_PER_SHULKER
     nivel_estimado = base_level + niveles_ganados
 
     embed = discord.Embed(
-        title="📊 Estado actual de la isla",
-        color=discord.Color.blurple(),
+        title=f"📊 Estado actual — {nombre}",
+        color=color,
         timestamp=utc_now()
     )
     embed.add_field(name="Base nivel", value=f"`{base_level:,}`", inline=False)

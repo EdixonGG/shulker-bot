@@ -50,9 +50,11 @@ EVENTO_START_DATE = date(2026, 7, 25)
 EVENTO_GOAL_PVS = 40
 EVENTO_NOMBRE = "Evento 40 PVs"
 EVENTO_STATUS = "active"  # active | ended | none
+EVENTO_TIPO = "end"  # end | ranking | custom
 EVENTO_RECOMPENSAS = ""
 EVENTO_REGLAS = ""
 EVENTO_PARTICIPANTES = "Todo el team"
+EVENTO_OBJETIVO = "Colocar End hasta completar la meta de PVs"
 
 # ===============================
 # ZONA HORARIA
@@ -449,15 +451,31 @@ def is_evento_activo() -> bool:
     return EVENTO_STATUS == "active"
 
 
+def evento_usa_registro_shulker() -> bool:
+    """Solo eventos tipo 'end' permiten registrar shulkers en el menú."""
+    return is_evento_activo() and EVENTO_TIPO == "end"
+
+
+def _label_tipo_evento(tipo: str | None = None) -> str:
+    t = (tipo or EVENTO_TIPO or "custom").lower()
+    return {
+        "end": "🪨 End / Shulkers (registro en el bot)",
+        "ranking": "🎮 Ranking del juego (battle pass, tops, etc.)",
+        "custom": "⭐ Evento personalizado",
+    }.get(t, t)
+
+
 def guardar_config_evento():
     pairs = {
         "event_status": EVENTO_STATUS,
         "event_name": EVENTO_NOMBRE,
+        "event_type": EVENTO_TIPO,
         "event_goal_pvs": str(EVENTO_GOAL_PVS),
         "event_start_date": str(EVENTO_START_DATE),
         "event_rewards": EVENTO_RECOMPENSAS or "",
         "event_rules": EVENTO_REGLAS or "",
         "event_participants": EVENTO_PARTICIPANTES or "",
+        "event_objective": EVENTO_OBJETIVO or "",
     }
     for k, v in pairs.items():
         cursor.execute(
@@ -470,6 +488,7 @@ def guardar_config_evento():
 def cargar_config_evento():
     global EVENTO_STATUS, EVENTO_NOMBRE, EVENTO_GOAL_PVS, EVENTO_GOAL_SHULKERS
     global EVENTO_START_DATE, EVENTO_RECOMPENSAS, EVENTO_REGLAS, EVENTO_PARTICIPANTES
+    global EVENTO_TIPO, EVENTO_OBJETIVO
 
     def _get(key, default=""):
         cursor.execute("SELECT value FROM bot_config WHERE key=?", (key,))
@@ -478,12 +497,14 @@ def cargar_config_evento():
 
     status = _get("event_status", "")
     if not status:
-        # Primera vez: guarda el evento actual como activo (o ended si ya terminó manualmente)
         guardar_config_evento()
         return
 
     EVENTO_STATUS = status
     EVENTO_NOMBRE = _get("event_name", EVENTO_NOMBRE) or EVENTO_NOMBRE
+    EVENTO_TIPO = (_get("event_type", EVENTO_TIPO) or EVENTO_TIPO).lower()
+    if EVENTO_TIPO not in ("end", "ranking", "custom"):
+        EVENTO_TIPO = "end"
     try:
         EVENTO_GOAL_PVS = int(_get("event_goal_pvs", str(EVENTO_GOAL_PVS)) or EVENTO_GOAL_PVS)
     except ValueError:
@@ -498,6 +519,7 @@ def cargar_config_evento():
     EVENTO_RECOMPENSAS = _get("event_rewards", "")
     EVENTO_REGLAS = _get("event_rules", "")
     EVENTO_PARTICIPANTES = _get("event_participants", EVENTO_PARTICIPANTES)
+    EVENTO_OBJETIVO = _get("event_objective", EVENTO_OBJETIVO)
 
 def total_secundaria_all_time() -> int:
     cursor.execute("SELECT COALESCE(SUM(total), 0) AS total FROM shulker_secundaria")
@@ -1448,63 +1470,91 @@ def _texto_top_evento(top) -> str:
 
 
 def construir_embed_evento_activo():
-    total = total_evento_shulkers()
-    faltan = max(0, EVENTO_GOAL_SHULKERS - total)
-    pv_actual, sh_actual = shulkers_a_pv_y_shulkers(total)
-    pv_faltan, sh_faltan = shulkers_a_pv_y_shulkers(faltan)
-    pct = (total / EVENTO_GOAL_SHULKERS) * 100 if EVENTO_GOAL_SHULKERS else 0
-    bar = barra_meta(total, EVENTO_GOAL_SHULKERS, largo=20)
-    top = get_evento_top(10)
+    if EVENTO_TIPO == "end":
+        desc = (
+            f"**Estado:** 🟢 EN CURSO\n"
+            f"**Tipo:** {_label_tipo_evento()}\n"
+            f"Puedes registrar shulkers eligiendo **Evento** en el menú de registro."
+        )
+    else:
+        desc = (
+            f"**Estado:** 🟢 EN CURSO\n"
+            f"**Tipo:** {_label_tipo_evento()}\n"
+            f"Este evento **no** usa registro de shulkers en el bot.\n"
+            f"El progreso se mide en el juego / según las reglas del staff."
+        )
 
     embed = discord.Embed(
         title=f"🎉 {EVENTO_NOMBRE}",
-        description="**Estado:** 🟢 EN CURSO — puedes registrar shulkers en **Evento**",
+        description=desc,
         color=discord.Color.gold(),
         timestamp=utc_now()
     )
-    embed.add_field(
-        name="📦 Meta del Evento",
-        value=(
-            f"**{EVENTO_GOAL_PVS} PVs** (`{EVENTO_GOAL_SHULKERS}` shulkers)\n"
-            f"`{bar}` `{pct:.1f}%`\n"
-            f"**Registrado:** `{total}` shulkers (`{pv_actual}` PVs + `{sh_actual}`)\n"
-            f"**Faltan:** `{faltan}` shulkers (`{pv_faltan}` PVs + `{sh_faltan}`)"
-        ),
-        inline=False
-    )
+
+    if EVENTO_OBJETIVO:
+        embed.add_field(name="🎯 Objetivo", value=EVENTO_OBJETIVO[:1024], inline=False)
+
+    if EVENTO_TIPO == "end":
+        total = total_evento_shulkers()
+        faltan = max(0, EVENTO_GOAL_SHULKERS - total)
+        pv_actual, sh_actual = shulkers_a_pv_y_shulkers(total)
+        pv_faltan, sh_faltan = shulkers_a_pv_y_shulkers(faltan)
+        pct = (total / EVENTO_GOAL_SHULKERS) * 100 if EVENTO_GOAL_SHULKERS else 0
+        bar = barra_meta(total, EVENTO_GOAL_SHULKERS, largo=20)
+        top = get_evento_top(10)
+        embed.add_field(
+            name="📦 Meta (End / PVs)",
+            value=(
+                f"**{EVENTO_GOAL_PVS} PVs** (`{EVENTO_GOAL_SHULKERS}` shulkers)\n"
+                f"`{bar}` `{pct:.1f}%`\n"
+                f"**Registrado:** `{total}` shulkers (`{pv_actual}` PVs + `{sh_actual}`)\n"
+                f"**Faltan:** `{faltan}` shulkers (`{pv_faltan}` PVs + `{sh_faltan}`)"
+            ),
+            inline=False
+        )
+        embed.add_field(name="🏆 Top del Evento", value=_texto_top_evento(top), inline=False)
+
     if EVENTO_PARTICIPANTES:
         embed.add_field(name="👥 Participantes", value=EVENTO_PARTICIPANTES[:1024], inline=False)
     if EVENTO_RECOMPENSAS:
         embed.add_field(name="🎁 Recompensas", value=EVENTO_RECOMPENSAS[:1024], inline=False)
     if EVENTO_REGLAS:
         embed.add_field(name="📜 Reglas", value=EVENTO_REGLAS[:1024], inline=False)
-    embed.add_field(name="🏆 Top del Evento", value=_texto_top_evento(top), inline=False)
+
     embed.set_footer(text=f"Desde {EVENTO_START_DATE} | Hora Chile")
     return embed
 
 
 def construir_embed_evento_terminado():
-    total = total_evento_shulkers()
-    pv_actual, sh_actual = shulkers_a_pv_y_shulkers(total)
-    top = get_evento_top(10)
-    ganador = top[0] if top else None
-
-    if ganador:
-        g_name = ganador["username"]
-        g_total = int(ganador["s"] or 0)
-        g_pv, g_sh = shulkers_a_pv_y_shulkers(g_total)
-        desc = (
-            f"## 🏆 ¡Felicitaciones a **{g_name}**!\n"
-            f"Ganador con **`{g_total}`** shulkers (`{g_pv}` PVs + `{g_sh}`)\n\n"
-            f"El evento **{EVENTO_NOMBRE}** ha terminado.\n"
-            f"Ya **no se pueden registrar** más shulkers de evento."
-        )
+    if EVENTO_TIPO == "end":
+        total = total_evento_shulkers()
+        pv_actual, sh_actual = shulkers_a_pv_y_shulkers(total)
+        top = get_evento_top(10)
+        ganador = top[0] if top else None
+        if ganador:
+            g_name = ganador["username"]
+            g_total = int(ganador["s"] or 0)
+            g_pv, g_sh = shulkers_a_pv_y_shulkers(g_total)
+            desc = (
+                f"## 🏆 ¡Felicitaciones a **{g_name}**!\n"
+                f"Ganador con **`{g_total}`** shulkers (`{g_pv}` PVs + `{g_sh}`)\n\n"
+                f"El evento **{EVENTO_NOMBRE}** ha terminado.\n"
+                f"Ya **no se pueden registrar** más shulkers de evento."
+            )
+        else:
+            desc = (
+                f"El evento **{EVENTO_NOMBRE}** ha terminado.\n"
+                f"No hubo registros válidos de End en el bot."
+            )
     else:
         desc = (
             f"El evento **{EVENTO_NOMBRE}** ha terminado.\n"
-            f"No hubo registros válidos.\n"
-            f"Ya **no se pueden registrar** más shulkers de evento."
+            f"**Tipo:** {_label_tipo_evento()}\n"
+            f"Los ganadores se definen según el ranking/reglas del juego o del staff."
         )
+        top = None
+        total = 0
+        pv_actual = sh_actual = 0
 
     embed = discord.Embed(
         title=f"🏁 {EVENTO_NOMBRE} — TERMINADO",
@@ -1512,18 +1562,24 @@ def construir_embed_evento_terminado():
         color=discord.Color.dark_gold(),
         timestamp=utc_now()
     )
-    embed.add_field(
-        name="📦 Resumen final",
-        value=(
-            f"**Meta:** `{EVENTO_GOAL_PVS}` PVs (`{EVENTO_GOAL_SHULKERS}` shulkers)\n"
-            f"**Total team:** `{total}` shulkers (`{pv_actual}` PVs + `{sh_actual}`)\n"
-            f"**Periodo:** `{EVENTO_START_DATE}` → fin"
-        ),
-        inline=False
-    )
+
+    if EVENTO_OBJETIVO:
+        embed.add_field(name="🎯 Objetivo", value=EVENTO_OBJETIVO[:1024], inline=False)
+
+    if EVENTO_TIPO == "end":
+        embed.add_field(
+            name="📦 Resumen final",
+            value=(
+                f"**Meta:** `{EVENTO_GOAL_PVS}` PVs (`{EVENTO_GOAL_SHULKERS}` shulkers)\n"
+                f"**Total team:** `{total}` shulkers (`{pv_actual}` PVs + `{sh_actual}`)\n"
+                f"**Periodo:** `{EVENTO_START_DATE}` → fin"
+            ),
+            inline=False
+        )
+        embed.add_field(name="🏅 Clasificación final", value=_texto_top_evento(top), inline=False)
+
     if EVENTO_RECOMPENSAS:
         embed.add_field(name="🎁 Recompensas", value=EVENTO_RECOMPENSAS[:1024], inline=False)
-    embed.add_field(name="🏅 Clasificación final", value=_texto_top_evento(top), inline=False)
     embed.set_footer(text="Panel permanente del evento cerrado | Hora Chile")
     return embed
 
@@ -2152,10 +2208,10 @@ class DestinoSelect(discord.ui.Select):
                 description="Se suma al ranking de la isla secundaria"
             ),
         ]
-        if is_evento_activo():
+        if evento_usa_registro_shulker():
             options.append(
                 discord.SelectOption(
-                    label=f"Evento: {EVENTO_NOMBRE[:80]}",
+                    label=f"Evento: {EVENTO_NOMBRE[:60]}",
                     value="evento",
                     emoji="🎉",
                     description=f"Meta {EVENTO_GOAL_PVS} PVs — en curso"
@@ -2171,9 +2227,9 @@ class DestinoSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         destino = self.values[0]
-        if destino == "evento" and not is_evento_activo():
+        if destino == "evento" and not evento_usa_registro_shulker():
             await interaction.response.send_message(
-                "🏁 El evento ya terminó. No se pueden registrar más shulkers de evento.",
+                "🏁 No hay un evento de End activo para registrar shulkers.",
                 ephemeral=True
             )
             try:
@@ -2223,9 +2279,9 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 await interaction.followup.send("❌ Número inválido.", ephemeral=True)
                 return
 
-            if self.destino == "evento" and not is_evento_activo():
+            if self.destino == "evento" and not evento_usa_registro_shulker():
                 await interaction.followup.send(
-                    "🏁 El evento ya terminó. No se pueden registrar más shulkers de evento.",
+                    "🏁 No hay un evento de End activo para registrar shulkers.",
                     ephemeral=True
                 )
                 return
@@ -3332,7 +3388,7 @@ async def setmetaevento(ctx, pvs: int):
 @bot.command(name="terminarevento")
 @commands.has_permissions(administrator=True)
 async def terminarevento(ctx):
-    """Cierra el evento actual, bloquea registros y publica el ganador."""
+    """Cierra el evento actual, bloquea registros (si aplica) y deja el panel final."""
     global EVENTO_STATUS
 
     if EVENTO_STATUS == "ended":
@@ -3344,22 +3400,23 @@ async def terminarevento(ctx):
         await ctx.reply("ℹ️ No hay un evento activo para terminar.", mention_author=False)
         return
 
-    ganador = get_evento_ganador()
+    ganador = get_evento_ganador() if EVENTO_TIPO == "end" else None
     EVENTO_STATUS = "ended"
     guardar_config_evento()
     await actualizar_estado_evento()
 
     embed = construir_embed_evento_terminado()
     await ctx.reply(
-        content="🏁 **¡Evento cerrado!** Ya no se puede registrar en Evento.",
+        content="🏁 **¡Evento cerrado!**",
         embed=embed,
         mention_author=False
     )
 
-    # Anuncio público en el canal del evento
     try:
         ch = bot.get_channel(EVENTO_RANKING_CHANNEL_ID)
-        if ch and ganador:
+        if not ch:
+            return
+        if EVENTO_TIPO == "end" and ganador:
             g_name = ganador["username"]
             g_total = int(ganador["s"] or 0)
             await ch.send(
@@ -3368,11 +3425,96 @@ async def terminarevento(ctx):
                 f"con `{g_total}` shulkers.\n"
                 f"👏 Gracias a todos los que aportaron."
             )
+        else:
+            await ch.send(
+                f"🎉🎊 **¡EL EVENTO HA TERMINADO!** 🎊🎉\n"
+                f"🏁 **{EVENTO_NOMBRE}**\n"
+                f"Tipo: {_label_tipo_evento()}\n"
+                f"Los ganadores se definen según el ranking del juego / staff.\n"
+                f"👏 Gracias a todos por participar."
+            )
     except Exception as e:
         print(f"⚠️ No se pudo enviar anuncio de fin de evento: {e}")
 
 
-class CrearEventoModal(discord.ui.Modal, title="Crear nuevo evento"):
+async def _activar_evento_desde_modal(
+    interaction: discord.Interaction,
+    *,
+    tipo: str,
+    nombre: str,
+    fecha_inicio: str,
+    objetivo: str,
+    recompensas: str,
+    reglas: str,
+    meta_pvs: int | None = None,
+):
+    global EVENTO_STATUS, EVENTO_NOMBRE, EVENTO_GOAL_PVS, EVENTO_GOAL_SHULKERS
+    global EVENTO_START_DATE, EVENTO_RECOMPENSAS, EVENTO_REGLAS, EVENTO_PARTICIPANTES
+    global EVENTO_TIPO, EVENTO_OBJETIVO
+
+    try:
+        inicio = date.fromisoformat(fecha_inicio.strip())
+    except ValueError:
+        await interaction.followup.send(
+            "❌ Fecha inválida. Usa `YYYY-MM-DD` (ejemplo: `2026-08-05`).",
+            ephemeral=True
+        )
+        return
+
+    EVENTO_TIPO = tipo
+    EVENTO_NOMBRE = nombre.strip()
+    EVENTO_START_DATE = inicio
+    EVENTO_OBJETIVO = (objetivo or "").strip()
+    EVENTO_RECOMPENSAS = (recompensas or "").strip()
+    EVENTO_REGLAS = (reglas or "").strip()
+    EVENTO_PARTICIPANTES = EVENTO_REGLAS[:200] if EVENTO_REGLAS else "Todo el team"
+
+    if tipo == "end":
+        if not meta_pvs or meta_pvs <= 0:
+            await interaction.followup.send("❌ Meta de PVs inválida.", ephemeral=True)
+            return
+        EVENTO_GOAL_PVS = meta_pvs
+        EVENTO_GOAL_SHULKERS = meta_pvs * SHULKERS_PER_PV
+        if not EVENTO_OBJETIVO:
+            EVENTO_OBJETIVO = f"Colocar End hasta completar {meta_pvs} PVs"
+    else:
+        # No aplica meta de End
+        EVENTO_GOAL_PVS = 0
+        EVENTO_GOAL_SHULKERS = 0
+
+    EVENTO_STATUS = "active"
+    guardar_config_evento()
+    await actualizar_estado_evento()
+
+    extra = (
+        f"📅 Desde `{EVENTO_START_DATE}` | Meta: `{EVENTO_GOAL_PVS}` PVs\n"
+        f"Opción **Evento** habilitada en el menú de registro."
+        if tipo == "end"
+        else f"📅 Desde `{EVENTO_START_DATE}`\nSin registro de shulkers (se mide en el juego / staff)."
+    )
+    await interaction.followup.send(
+        f"✅ Evento **{EVENTO_NOMBRE}** creado y **activado**.\n"
+        f"Tipo: {_label_tipo_evento(tipo)}\n{extra}",
+        ephemeral=True
+    )
+
+    try:
+        ch = bot.get_channel(EVENTO_RANKING_CHANNEL_ID)
+        if ch:
+            hint = (
+                "Usa el botón de registrar shulker → opción **Evento**."
+                if tipo == "end"
+                else "Sigue las reglas del evento; el progreso se mide en el juego."
+            )
+            await ch.send(
+                content=f"📢 **¡NUEVO EVENTO!**\n🎉 **{EVENTO_NOMBRE}**\n{hint}",
+                embed=construir_embed_evento_activo()
+            )
+    except Exception as e:
+        print(f"⚠️ No se pudo anunciar el nuevo evento: {e}")
+
+
+class CrearEventoEndModal(discord.ui.Modal, title="Evento: End / Shulkers"):
     nombre = discord.ui.TextInput(
         label="Nombre del evento",
         placeholder="Ej: Evento 50 PVs de End",
@@ -3394,102 +3536,194 @@ class CrearEventoModal(discord.ui.Modal, title="Crear nuevo evento"):
     recompensas = discord.ui.TextInput(
         label="Recompensas / premios",
         style=discord.TextStyle.paragraph,
-        placeholder="Ej: Top 1: Tag custom | Top 2-3: kit...",
+        placeholder="Top 1: Tag custom | Top 2-3: kit...",
         max_length=500,
         required=False
     )
     reglas = discord.ui.TextInput(
         label="Reglas y quién puede participar",
         style=discord.TextStyle.paragraph,
-        placeholder="Ej: Todo el team. Solo End colocada del evento...",
+        placeholder="Todo el team. Solo End del evento...",
         max_length=500,
         required=False
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        global EVENTO_STATUS, EVENTO_NOMBRE, EVENTO_GOAL_PVS, EVENTO_GOAL_SHULKERS
-        global EVENTO_START_DATE, EVENTO_RECOMPENSAS, EVENTO_REGLAS, EVENTO_PARTICIPANTES
-
         await interaction.response.defer(ephemeral=True)
-
         try:
             pvs = int(str(self.meta_pvs.value).strip())
-            if pvs <= 0:
-                raise ValueError
         except ValueError:
             await interaction.followup.send("❌ Meta de PVs inválida.", ephemeral=True)
             return
+        await _activar_evento_desde_modal(
+            interaction,
+            tipo="end",
+            nombre=str(self.nombre.value),
+            fecha_inicio=str(self.fecha_inicio.value),
+            objetivo=f"Colocar End hasta completar {pvs} PVs",
+            recompensas=str(self.recompensas.value or ""),
+            reglas=str(self.reglas.value or ""),
+            meta_pvs=pvs,
+        )
 
-        try:
-            inicio = date.fromisoformat(str(self.fecha_inicio.value).strip())
-        except ValueError:
-            await interaction.followup.send(
-                "❌ Fecha inválida. Usa `YYYY-MM-DD` (ejemplo: `2026-08-05`).",
+
+class CrearEventoRankingModal(discord.ui.Modal, title="Evento: Ranking del juego"):
+    nombre = discord.ui.TextInput(
+        label="Nombre del evento",
+        placeholder="Ej: Battle Pass — Top matar mobs",
+        max_length=80,
+        required=True
+    )
+    objetivo = discord.ui.TextInput(
+        label="Qué se compite / cómo se gana",
+        style=discord.TextStyle.paragraph,
+        placeholder="Top 10 matar mobs / minar bloques del battle pass...",
+        max_length=400,
+        required=True
+    )
+    fecha_inicio = discord.ui.TextInput(
+        label="Fecha de inicio (YYYY-MM-DD)",
+        placeholder="Ej: 2026-08-05",
+        max_length=10,
+        required=True
+    )
+    recompensas = discord.ui.TextInput(
+        label="Recompensas según puesto",
+        style=discord.TextStyle.paragraph,
+        placeholder="Top 1: X | Top 2-3: Y | Top 4-10: Z",
+        max_length=500,
+        required=False
+    )
+    reglas = discord.ui.TextInput(
+        label="Reglas y quién puede participar",
+        style=discord.TextStyle.paragraph,
+        placeholder="Todo el team. Solo cuenta el top del pase...",
+        max_length=500,
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await _activar_evento_desde_modal(
+            interaction,
+            tipo="ranking",
+            nombre=str(self.nombre.value),
+            fecha_inicio=str(self.fecha_inicio.value),
+            objetivo=str(self.objetivo.value),
+            recompensas=str(self.recompensas.value or ""),
+            reglas=str(self.reglas.value or ""),
+        )
+
+
+class CrearEventoCustomModal(discord.ui.Modal, title="Evento personalizado"):
+    nombre = discord.ui.TextInput(
+        label="Nombre del evento",
+        placeholder="Ej: Concurso de builds",
+        max_length=80,
+        required=True
+    )
+    objetivo = discord.ui.TextInput(
+        label="Objetivo del evento",
+        style=discord.TextStyle.paragraph,
+        placeholder="Qué hay que hacer para ganar...",
+        max_length=400,
+        required=True
+    )
+    fecha_inicio = discord.ui.TextInput(
+        label="Fecha de inicio (YYYY-MM-DD)",
+        placeholder="Ej: 2026-08-05",
+        max_length=10,
+        required=True
+    )
+    recompensas = discord.ui.TextInput(
+        label="Recompensas",
+        style=discord.TextStyle.paragraph,
+        placeholder="Premios del evento...",
+        max_length=500,
+        required=False
+    )
+    reglas = discord.ui.TextInput(
+        label="Reglas y participantes",
+        style=discord.TextStyle.paragraph,
+        placeholder="Quién puede unirse y reglas...",
+        max_length=500,
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await _activar_evento_desde_modal(
+            interaction,
+            tipo="custom",
+            nombre=str(self.nombre.value),
+            fecha_inicio=str(self.fecha_inicio.value),
+            objetivo=str(self.objetivo.value),
+            recompensas=str(self.recompensas.value or ""),
+            reglas=str(self.reglas.value or ""),
+        )
+
+
+class TipoEventoSelect(discord.ui.Select):
+    def __init__(self, author_id: int):
+        self.author_id = author_id
+        options = [
+            discord.SelectOption(
+                label="End / Shulkers",
+                value="end",
+                emoji="🪨",
+                description="Meta en PVs + registro en el bot"
+            ),
+            discord.SelectOption(
+                label="Ranking del juego",
+                value="ranking",
+                emoji="🎮",
+                description="Battle pass, tops mobs/minería, etc."
+            ),
+            discord.SelectOption(
+                label="Personalizado",
+                value="custom",
+                emoji="⭐",
+                description="Cualquier otro tipo de evento del team"
+            ),
+        ]
+        super().__init__(
+            placeholder="¿Qué tipo de evento quieres crear?",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ Solo quien ejecutó el comando puede usar esto.",
                 ephemeral=True
             )
             return
+        tipo = self.values[0]
+        if tipo == "end":
+            await interaction.response.send_modal(CrearEventoEndModal())
+        elif tipo == "ranking":
+            await interaction.response.send_modal(CrearEventoRankingModal())
+        else:
+            await interaction.response.send_modal(CrearEventoCustomModal())
 
-        EVENTO_NOMBRE = str(self.nombre.value).strip()
-        EVENTO_GOAL_PVS = pvs
-        EVENTO_GOAL_SHULKERS = pvs * SHULKERS_PER_PV
-        EVENTO_START_DATE = inicio
-        EVENTO_RECOMPENSAS = str(self.recompensas.value or "").strip()
-        reglas_txt = str(self.reglas.value or "").strip()
-        EVENTO_REGLAS = reglas_txt
-        EVENTO_PARTICIPANTES = "Todo el team" if not reglas_txt else reglas_txt[:200]
-        EVENTO_STATUS = "active"
-        guardar_config_evento()
 
-        await actualizar_estado_evento()
-
-        anuncios = construir_embed_evento_activo()
-        await interaction.followup.send(
-            f"✅ Evento **{EVENTO_NOMBRE}** creado y **activado**.\n"
-            f"📅 Desde `{EVENTO_START_DATE}` | Meta: `{EVENTO_GOAL_PVS}` PVs\n"
-            f"Los registros en el menú **Evento** ya están habilitados.",
-            ephemeral=True
-        )
-
-        try:
-            ch = bot.get_channel(EVENTO_RANKING_CHANNEL_ID)
-            if ch:
-                await ch.send(
-                    content=(
-                        f"📢 **¡NUEVO EVENTO!**\n"
-                        f"🎉 **{EVENTO_NOMBRE}**\n"
-                        f"Usa el botón de registrar shulker → opción **Evento**."
-                    ),
-                    embed=anuncios
-                )
-        except Exception as e:
-            print(f"⚠️ No se pudo anunciar el nuevo evento: {e}")
+class CrearEventoView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=180)
+        self.add_item(TipoEventoSelect(author_id))
 
 
 @bot.command(name="crearevento")
 @commands.has_permissions(administrator=True)
 async def crearevento(ctx):
-    """Abre el formulario para crear/activar un nuevo evento."""
+    """Elige el tipo de evento y completa el formulario."""
     await ctx.send(
-        "📋 Completa el formulario para crear el evento:",
+        "📋 **Crear evento** — elige el tipo:",
         view=CrearEventoView(ctx.author.id),
-        delete_after=120
+        delete_after=180
     )
-
-
-class CrearEventoView(discord.ui.View):
-    def __init__(self, author_id: int):
-        super().__init__(timeout=120)
-        self.author_id = author_id
-
-    @discord.ui.button(label="Crear evento", style=discord.ButtonStyle.primary, emoji="🎉")
-    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "❌ Solo quien ejecutó el comando puede usar este botón.",
-                ephemeral=True
-            )
-            return
-        await interaction.response.send_modal(CrearEventoModal())
 
 # ===============================
 # READY

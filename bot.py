@@ -350,6 +350,8 @@ def asegurar_columna_si_no_existe(tabla: str, columna: str, definicion: str):
         print(f"✅ Columna agregada: {tabla}.{columna}")
 
 asegurar_columna_si_no_existe("end_requests", "rejection_reason", "TEXT")
+asegurar_columna_si_no_existe("end_requests", "ubicacion", "TEXT")
+asegurar_columna_si_no_existe("pending_end_uploads", "ubicacion", "TEXT")
 
 # ===============================
 # UTILIDADES
@@ -746,7 +748,14 @@ def cleanup_expired_pending_end():
     )
     db.commit()
 
-def save_pending_end(user_id: int, username: str, fecha: str, cantidad: int, channel_id: int):
+def save_pending_end(
+    user_id: int,
+    username: str,
+    fecha: str,
+    cantidad: int,
+    channel_id: int,
+    ubicacion: str = "",
+):
     now = utc_now()
     expires = datetime.fromtimestamp(
         now.timestamp() + END_UPLOAD_TIMEOUT_SECONDS,
@@ -755,8 +764,8 @@ def save_pending_end(user_id: int, username: str, fecha: str, cantidad: int, cha
 
     cursor.execute("""
         INSERT OR REPLACE INTO pending_end_uploads
-        (user_id, username, fecha, cantidad, channel_id, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (user_id, username, fecha, cantidad, channel_id, created_at, expires_at, ubicacion)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id,
         username,
@@ -764,7 +773,8 @@ def save_pending_end(user_id: int, username: str, fecha: str, cantidad: int, cha
         cantidad,
         channel_id,
         now.isoformat(),
-        expires.isoformat()
+        expires.isoformat(),
+        (ubicacion or "").strip()[:500],
     ))
     db.commit()
 
@@ -775,7 +785,7 @@ def clear_pending_end(user_id: int):
 def get_pending_end(user_id: int):
     cleanup_expired_pending_end()
     cursor.execute("""
-        SELECT user_id, username, fecha, cantidad, channel_id, created_at, expires_at
+        SELECT user_id, username, fecha, cantidad, channel_id, created_at, expires_at, ubicacion
         FROM pending_end_uploads
         WHERE user_id = ?
     """, (user_id,))
@@ -804,7 +814,8 @@ def get_pending_end_remaining_seconds(user_id: int) -> int:
 def get_request_by_review_message_id(message_id: int):
     cursor.execute("""
         SELECT id, user_id, username, fecha, cantidad, image_url, status,
-               rejection_reason, review_message_id, reviewed_by, reviewed_at, created_at
+               rejection_reason, review_message_id, reviewed_by, reviewed_at, created_at,
+               ubicacion
         FROM end_requests
         WHERE review_message_id = ?
     """, (message_id,))
@@ -813,7 +824,8 @@ def get_request_by_review_message_id(message_id: int):
 def get_request_by_id(request_id: int):
     cursor.execute("""
         SELECT id, user_id, username, fecha, cantidad, image_url, status,
-               rejection_reason, review_message_id, reviewed_by, reviewed_at, created_at
+               rejection_reason, review_message_id, reviewed_by, reviewed_at, created_at,
+               ubicacion
         FROM end_requests
         WHERE id = ?
     """, (request_id,))
@@ -916,9 +928,21 @@ def construir_embed_revision(request_row, reviewer_name: str | None = None):
         timestamp=utc_now()
     )
 
+    # ubicacion puede no existir en filas muy antiguas
+    try:
+        ubicacion = (request_row["ubicacion"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        ubicacion = ""
+
     embed.add_field(name="👤 Usuario", value=f"<@{user_id}>", inline=True)
     embed.add_field(name="📦 Cantidad", value=f"`{cantidad}` end aportada", inline=True)
     embed.add_field(name="📅 Fecha", value=f"`{fecha_registro}`", inline=True)
+    if ubicacion:
+        embed.add_field(
+            name="📍 Dónde la dejó",
+            value=ubicacion[:1024],
+            inline=False
+        )
     embed.add_field(name="📌 Estado", value=estado_texto, inline=False)
     embed.add_field(name="🆔 Solicitud", value=f"`#{request_id}`", inline=True)
     embed.add_field(name="🕒 Creada", value=f"`{created_at}`", inline=True)
@@ -2371,6 +2395,13 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
         required=True,
         max_length=8
     )
+    ubicacion = discord.ui.TextInput(
+        label="¿Dónde las dejaste?",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=500,
+        placeholder="Ej: Cofre del spawn isla principal, fila 3 / Chunk X,Z / Almacén team..."
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -2408,22 +2439,32 @@ class EndAportadoModal(discord.ui.Modal, title="Registro de End Aportada"):
                 )
                 return
 
+            ubicacion_txt = str(self.ubicacion.value or "").strip()
+            if len(ubicacion_txt) < 3:
+                await interaction.followup.send(
+                    "❌ Indica con más detalle **dónde dejaste** la End (mín. 3 caracteres).",
+                    ephemeral=True
+                )
+                return
+
             save_pending_end(
                 user_id=user_id,
                 username=interaction.user.display_name,
                 fecha=local_date_str(),
                 cantidad=cantidad_int,
-                channel_id=interaction.channel.id if interaction.channel else 0
+                channel_id=interaction.channel.id if interaction.channel else 0,
+                ubicacion=ubicacion_txt,
             )
 
             set_cooldown("end_aportada", user_id, COOLDOWN_SECONDS)
 
             await interaction.followup.send(
-                "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia de la End farmeada.\n"
+                "📸 **Paso 2/2:** ahora sube **una imagen** como evidencia.\n"
+                f"📍 Ubicación registrada: `{ubicacion_txt[:120]}`\n"
                 f"⏳ Tienes `{END_UPLOAD_TIMEOUT_SECONDS}` segundos.\n"
-                "✅ Cuando la subas, se enviará al canal privado de staff para revisión.\n"
+                "✅ Staff verá la imagen **y** dónde la dejaste.\n"
                 "⚠️ Solo lo aprobado contará en el top público.\n"
-                "🚫 No escribas texto en el canal, solo sube la imagen.",
+                "💡 Puedes añadir un comentario junto a la imagen si quieres.",
                 ephemeral=True
             )
 
@@ -2823,13 +2864,13 @@ async def manejar_restriccion_canal_end_aportada(message: discord.Message) -> bo
         if message.attachments:
             await message.channel.send(
                 f"{message.author.mention} ❌ Primero debes pulsar el botón **Registrar End Aportada**, "
-                f"escribir la cantidad y recién después subir la imagen.",
+                f"completar cantidad + ubicación y recién después subir la imagen.",
                 delete_after=10
             )
         else:
             await message.channel.send(
-                f"{message.author.mention} 🚫 En este canal no se permite escribir texto.\n"
-                f"Usa el botón **Registrar End Aportada** y luego sube solo la imagen de evidencia.",
+                f"{message.author.mention} 🚫 Usa el botón **Registrar End Aportada** "
+                f"(cantidad + dónde la dejaste) y luego sube la imagen de evidencia.",
                 delete_after=10
             )
 
@@ -2921,18 +2962,34 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
 
         staff_image_url = staff_evidence_msg.attachments[0].url
 
+        # Ubicación del modal + comentario opcional junto a la imagen
+        try:
+            ubicacion_base = (pendiente["ubicacion"] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            ubicacion_base = ""
+        comentario_extra = (message.content or "").strip()
+        if comentario_extra.startswith("!"):
+            comentario_extra = ""
+        if ubicacion_base and comentario_extra:
+            ubicacion_final = f"{ubicacion_base}\n💬 Nota: {comentario_extra}"[:500]
+        elif comentario_extra:
+            ubicacion_final = comentario_extra[:500]
+        else:
+            ubicacion_final = ubicacion_base[:500]
+
         cursor.execute("""
             INSERT INTO end_requests (
-                user_id, username, fecha, cantidad, image_url, status, created_at
+                user_id, username, fecha, cantidad, image_url, status, created_at, ubicacion
             )
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
         """, (
             message.author.id,
             pendiente["username"],
             pendiente["fecha"],
             pendiente["cantidad"],
             staff_image_url,
-            local_datetime_str()
+            local_datetime_str(),
+            ubicacion_final,
         ))
         db.commit()
 
@@ -2963,10 +3020,12 @@ async def manejar_subida_pendiente_end(message: discord.Message) -> bool:
         )
 
         try:
+            ubi_dm = ubicacion_final[:200] if ubicacion_final else "—"
             await message.author.send(
                 f"✅ Tu solicitud de **End aportada** fue registrada correctamente.\n"
                 f"🆔 Solicitud: `#{request_id}`\n"
                 f"📦 Cantidad: `{pendiente['cantidad']}` end aportada\n"
+                f"📍 Ubicación: {ubi_dm}\n"
                 f"📅 Fecha: `{pendiente['fecha']}`\n"
                 "⏳ Ahora está pendiente de revisión del staff."
             )

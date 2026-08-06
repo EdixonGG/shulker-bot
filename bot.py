@@ -34,6 +34,10 @@ STAFF_LOG_CHANNEL_ID = 1462316363552133202
 SECUNDARIA_RANKING_CHANNEL_ID = 1531562565287673856
 EVENTO_RANKING_CHANNEL_ID = 1531562510040305715
 
+# Canal staff para panel de stock de End en almacén (pon el ID real)
+# Si queda en 0, igual funcionan los comandos !stock*
+STOCK_CHANNEL_ID = 1534806401606484149
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
@@ -541,6 +545,122 @@ def total_secundaria_periodo(where_sql: str, params: tuple) -> int:
     cursor.execute(f"SELECT COALESCE(SUM(total), 0) AS total FROM shulker_secundaria WHERE {where_sql}", params)
     row = cursor.fetchone()
     return int(row["total"] or 0)
+
+
+# ===============================
+# STOCK DE END EN ALMACÉN
+# ===============================
+def _stock_key(destino: str) -> str | None:
+    d = (destino or "").strip().lower()
+    if d in ("principal", "isla", "main"):
+        return "stock_principal"
+    if d in ("secundaria", "segunda", "sec"):
+        return "stock_secundaria"
+    return None
+
+
+def get_stock_shulkers(destino: str) -> int:
+    key = _stock_key(destino)
+    if not key:
+        return 0
+    try:
+        return max(0, int(get_progress_value(key, "0") or 0))
+    except ValueError:
+        return 0
+
+
+def set_stock_shulkers(destino: str, cantidad: int) -> int:
+    key = _stock_key(destino)
+    if not key:
+        raise ValueError("destino inválido")
+    cantidad = max(0, int(cantidad))
+    set_progress_value(key, str(cantidad))
+    return cantidad
+
+
+def add_stock_shulkers(destino: str, cantidad: int) -> int:
+    if cantidad <= 0:
+        return get_stock_shulkers(destino)
+    nuevo = get_stock_shulkers(destino) + int(cantidad)
+    return set_stock_shulkers(destino, nuevo)
+
+
+def remove_stock_shulkers(destino: str, cantidad: int) -> tuple[int, int]:
+    """
+    Resta del stock sin bajar de 0.
+    Returns: (cantidad_realmente_restada, stock_restante)
+    """
+    if cantidad <= 0:
+        actual = get_stock_shulkers(destino)
+        return 0, actual
+    actual = get_stock_shulkers(destino)
+    restado = min(actual, int(cantidad))
+    nuevo = actual - restado
+    set_stock_shulkers(destino, nuevo)
+    return restado, nuevo
+
+
+def format_stock_line(destino_label: str, shulkers: int) -> str:
+    pv, resto = shulkers_a_pv_y_shulkers(shulkers)
+    return (
+        f"**{destino_label}:** `{shulkers:,}` shulkers "
+        f"(`{pv}` PVs + `{resto}` shulkers)"
+    )
+
+
+def parse_cantidad_stock(cantidad: int, unidad: str | None = None) -> int:
+    """Convierte a shulkers. unidad: shulker(s) | pv(s)"""
+    u = (unidad or "shulker").strip().lower()
+    if u in ("pv", "pvs"):
+        return int(cantidad) * SHULKERS_PER_PV
+    return int(cantidad)
+
+
+async def actualizar_panel_stock():
+    try:
+        if not STOCK_CHANNEL_ID:
+            return
+        channel = bot.get_channel(STOCK_CHANNEL_ID)
+        if not channel:
+            print("⚠️ No se encontró STOCK_CHANNEL_ID")
+            return
+
+        sp = get_stock_shulkers("principal")
+        ss = get_stock_shulkers("secundaria")
+        total = sp + ss
+        tpv, trest = shulkers_a_pv_y_shulkers(total)
+
+        embed = discord.Embed(
+            title="📦 STOCK DE END — ALMACÉN",
+            description=(
+                "Contabilidad de End disponible en almacén del team.\n"
+                "Al registrar shulkers **puestas** el miembro elige si salieron del almacén o eran propias."
+            ),
+            color=discord.Color.dark_blue(),
+            timestamp=utc_now()
+        )
+        embed.add_field(
+            name="🏝️ Isla Principal",
+            value=format_stock_line("Stock", sp).replace("**Stock:** ", ""),
+            inline=False
+        )
+        embed.add_field(
+            name="🌿 Isla Secundaria",
+            value=format_stock_line("Stock", ss).replace("**Stock:** ", ""),
+            inline=False
+        )
+        embed.add_field(
+            name="Σ Total almacén",
+            value=f"`{total:,}` shulkers (`{tpv}` PVs + `{trest}`)",
+            inline=False
+        )
+        embed.set_footer(text="Staff: !stocksumar | !stockquitar | !stockset | Hora Chile")
+
+        msg = await obtener_mensaje_fijo(channel, "panel_stock_end")
+        await msg.edit(content=None, embed=embed)
+        print("✅ Panel de stock actualizado")
+    except Exception as e:
+        print(f"❌ Error en actualizar_panel_stock: {e}")
 
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
@@ -2262,7 +2382,23 @@ class DestinoSelect(discord.ui.Select):
                 pass
             return
 
-        await interaction.response.send_modal(ShulkerModal(destino=destino))
+        # Principal / Secundaria: preguntar origen (almacén vs propia)
+        if destino in ("principal", "secundaria"):
+            await interaction.response.send_message(
+                f"📦 **¿De dónde salió la End** que vas a registrar en "
+                f"**{'Isla Principal' if destino == 'principal' else 'Isla Secundaria'}**?\n\n"
+                f"• **Del almacén del team** → se resta del stock\n"
+                f"• **Mía / otra fuente** → solo ranking, **no** resta stock",
+                view=OrigenEndView(destino=destino),
+                ephemeral=True
+            )
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
+            return
+
+        await interaction.response.send_modal(ShulkerModal(destino=destino, origen=None))
         try:
             await interaction.message.delete()
         except Exception:
@@ -2275,12 +2411,40 @@ class DestinoView(discord.ui.View):
         self.add_item(DestinoSelect())
 
 
+class OrigenEndView(discord.ui.View):
+    def __init__(self, destino: str):
+        super().__init__(timeout=60)
+        self.destino = destino
+
+    @discord.ui.button(
+        label="Del almacén del team",
+        style=discord.ButtonStyle.primary,
+        emoji="📦"
+    )
+    async def origen_almacen(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            ShulkerModal(destino=self.destino, origen="almacen")
+        )
+
+    @discord.ui.button(
+        label="Mía / otra fuente",
+        style=discord.ButtonStyle.secondary,
+        emoji="🎒"
+    )
+    async def origen_propia(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            ShulkerModal(destino=self.destino, origen="propia")
+        )
+
+
 class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
     cantidad = discord.ui.TextInput(label="¿Cuántas shulker colocaste?", required=True)
 
-    def __init__(self, destino: str = "principal"):
+    def __init__(self, destino: str = "principal", origen: str | None = None):
         super().__init__()
         self.destino = destino
+        # "almacen" | "propia" | None (evento)
+        self.origen = origen
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -2346,14 +2510,39 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             }
             nombre_destino = nombres.get(self.destino, self.destino)
 
+            # Contabilidad de almacén (solo principal / secundaria)
+            stock_msg = ""
+            if self.destino in ("principal", "secundaria") and self.origen == "almacen":
+                restado, queda = remove_stock_shulkers(self.destino, cantidad_int)
+                if restado == 0:
+                    stock_msg = (
+                        f"\n📦 Stock **{nombre_destino}**: no había End en almacén "
+                        f"(quedó en `0`). El registro **sí** se guardó."
+                    )
+                elif restado < cantidad_int:
+                    stock_msg = (
+                        f"\n📦 Del almacén se restaron solo `{restado}` "
+                        f"(había menos stock). El resto se trató como propio.\n"
+                        f"📉 Stock restante **{nombre_destino}**: `{queda}` shulkers."
+                    )
+                else:
+                    stock_msg = (
+                        f"\n📦 Restado del almacén: `{restado}` shulkers.\n"
+                        f"📉 Stock restante **{nombre_destino}**: `{queda}` shulkers."
+                    )
+                asyncio.create_task(actualizar_panel_stock())
+            elif self.destino in ("principal", "secundaria") and self.origen == "propia":
+                stock_msg = "\n🎒 Origen: **propia / otra fuente** (no se restó del almacén)."
+
             msg = await interaction.followup.send(
                 f"✅ Registro guardado en **{nombre_destino}**.\n"
-                f"Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`.",
+                f"Añadiste `{cantidad_int}` shulkers. Total de hoy: `{nuevo_total}`."
+                f"{stock_msg}",
                 ephemeral=True
             )
 
             async def _borrar_exito():
-                await asyncio.sleep(6)
+                await asyncio.sleep(8)
                 try:
                     await msg.delete()
                 except Exception:
@@ -2367,7 +2556,10 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 )
             )
 
-            print(f"✅ Registro {nombre_destino} para {username}: +{cantidad_int}")
+            print(
+                f"✅ Registro {nombre_destino} para {username}: +{cantidad_int} "
+                f"(origen={self.origen})"
+            )
         except Exception as e:
             print(f"❌ Error en modal on_submit: {e}")
             try:
@@ -2825,6 +3017,19 @@ class EndReviewView(discord.ui.View):
             await actualizar_rankings_end()
             print(f"✅ Solicitud END #{request_id} aprobada por {interaction.user}")
 
+            # Ofrecer sumar al stock del almacén
+            try:
+                cant = int(request_row["cantidad"] or 0)
+                if cant > 0:
+                    await interaction.followup.send(
+                        f"📦 Solicitud `#{request_id}` aprobada (`{cant}` shulkers).\n"
+                        f"¿Sumar esta End al **stock del almacén**?",
+                        view=StockAsignarView(cantidad=cant, request_id=request_id),
+                        ephemeral=True
+                    )
+            except Exception as e:
+                print(f"⚠️ No se pudo ofrecer asignación de stock: {e}")
+
         except Exception as e:
             print(f"❌ Error en EndReviewView.handle_approve: {e}")
             if not interaction.response.is_done():
@@ -2832,6 +3037,55 @@ class EndReviewView(discord.ui.View):
                     "❌ Ocurrió un error al aprobar la solicitud.",
                     ephemeral=True
                 )
+
+
+class StockAsignarView(discord.ui.View):
+    """Tras aprobar End aportada: sumar al stock de una isla o no sumar."""
+
+    def __init__(self, cantidad: int, request_id: int):
+        super().__init__(timeout=300)
+        self.cantidad = cantidad
+        self.request_id = request_id
+
+    async def _asignar(self, interaction: discord.Interaction, destino: str | None):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_member(interaction.user):
+            await interaction.response.send_message(
+                "❌ Solo staff puede asignar stock.",
+                ephemeral=True
+            )
+            return
+
+        if destino is None:
+            await interaction.response.edit_message(
+                content=f"ℹ️ No se sumó al almacén la solicitud `#{self.request_id}`.",
+                view=None
+            )
+            return
+
+        nuevo = add_stock_shulkers(destino, self.cantidad)
+        nombre = "Isla Principal" if destino == "principal" else "Isla Secundaria"
+        pv, resto = shulkers_a_pv_y_shulkers(nuevo)
+        await interaction.response.edit_message(
+            content=(
+                f"✅ `+{self.cantidad}` shulkers al stock de **{nombre}** "
+                f"(req `#{self.request_id}`).\n"
+                f"📦 Stock actual: `{nuevo}` shulkers (`{pv}` PVs + `{resto}`)."
+            ),
+            view=None
+        )
+        await actualizar_panel_stock()
+
+    @discord.ui.button(label="→ Principal", style=discord.ButtonStyle.success, emoji="🏝️")
+    async def a_principal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._asignar(interaction, "principal")
+
+    @discord.ui.button(label="→ Secundaria", style=discord.ButtonStyle.success, emoji="🌿")
+    async def a_secundaria(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._asignar(interaction, "secundaria")
+
+    @discord.ui.button(label="No sumar", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def no_sumar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._asignar(interaction, None)
 
 # ===============================
 # RESTRICCIÓN DEL CANAL END APORTADA
@@ -3784,6 +4038,129 @@ async def crearevento(ctx):
         delete_after=180
     )
 
+
+# ===============================
+# COMANDOS STOCK ALMACÉN
+# ===============================
+@bot.command(name="stock")
+@commands.has_permissions(administrator=True)
+async def stock_cmd(ctx):
+    """Muestra el stock actual de End en almacén."""
+    sp = get_stock_shulkers("principal")
+    ss = get_stock_shulkers("secundaria")
+    total = sp + ss
+    embed = discord.Embed(
+        title="📦 Stock de End — Almacén",
+        color=discord.Color.dark_blue(),
+        timestamp=utc_now()
+    )
+    embed.add_field(name="🏝️ Principal", value=format_stock_line("Stock", sp).replace("**Stock:** ", ""), inline=False)
+    embed.add_field(name="🌿 Secundaria", value=format_stock_line("Stock", ss).replace("**Stock:** ", ""), inline=False)
+    tpv, tr = shulkers_a_pv_y_shulkers(total)
+    embed.add_field(name="Σ Total", value=f"`{total:,}` shulkers (`{tpv}` PVs + `{tr}`)", inline=False)
+    embed.set_footer(text="!stocksumar | !stockquitar | !stockset | !publicarstock")
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="stocksumar")
+@commands.has_permissions(administrator=True)
+async def stocksumar(ctx, destino: str, cantidad: int, unidad: str = "shulker"):
+    """
+    Suma End al almacén.
+    Uso: !stocksumar principal 540
+         !stocksumar secundaria 20 pv
+    """
+    if _stock_key(destino) is None:
+        await ctx.reply("❌ Destino: `principal` o `secundaria`.", mention_author=False)
+        return
+    if cantidad <= 0:
+        await ctx.reply("❌ La cantidad debe ser > 0.", mention_author=False)
+        return
+    try:
+        sh = parse_cantidad_stock(cantidad, unidad)
+    except ValueError:
+        await ctx.reply("❌ Unidad inválida. Usa `shulker` o `pv`.", mention_author=False)
+        return
+    nuevo = add_stock_shulkers(destino, sh)
+    await ctx.reply(
+        f"✅ `+{sh}` shulkers a **{destino}**.\n"
+        f"📦 Stock actual: {format_stock_line(destino, nuevo)}",
+        mention_author=False
+    )
+    await actualizar_panel_stock()
+
+
+@bot.command(name="stockquitar")
+@commands.has_permissions(administrator=True)
+async def stockquitar(ctx, destino: str, cantidad: int, unidad: str = "shulker"):
+    """
+    Quita End del almacén (no baja de 0).
+    Uso: !stockquitar principal 27
+         !stockquitar secundaria 1 pv
+    """
+    if _stock_key(destino) is None:
+        await ctx.reply("❌ Destino: `principal` o `secundaria`.", mention_author=False)
+        return
+    if cantidad <= 0:
+        await ctx.reply("❌ La cantidad debe ser > 0.", mention_author=False)
+        return
+    try:
+        sh = parse_cantidad_stock(cantidad, unidad)
+    except ValueError:
+        await ctx.reply("❌ Unidad inválida. Usa `shulker` o `pv`.", mention_author=False)
+        return
+    restado, nuevo = remove_stock_shulkers(destino, sh)
+    await ctx.reply(
+        f"✅ `-{restado}` shulkers de **{destino}** "
+        f"(pediste quitar `{sh}`).\n"
+        f"📦 Stock actual: {format_stock_line(destino, nuevo)}",
+        mention_author=False
+    )
+    await actualizar_panel_stock()
+
+
+@bot.command(name="stockset")
+@commands.has_permissions(administrator=True)
+async def stockset(ctx, destino: str, cantidad: int, unidad: str = "shulker"):
+    """
+    Fija el stock exacto de una isla.
+    Uso: !stockset principal 1080
+         !stockset secundaria 20 pv
+    """
+    if _stock_key(destino) is None:
+        await ctx.reply("❌ Destino: `principal` o `secundaria`.", mention_author=False)
+        return
+    if cantidad < 0:
+        await ctx.reply("❌ La cantidad no puede ser negativa.", mention_author=False)
+        return
+    try:
+        sh = parse_cantidad_stock(cantidad, unidad)
+    except ValueError:
+        await ctx.reply("❌ Unidad inválida. Usa `shulker` o `pv`.", mention_author=False)
+        return
+    nuevo = set_stock_shulkers(destino, sh)
+    await ctx.reply(
+        f"✅ Stock de **{destino}** fijado.\n"
+        f"📦 {format_stock_line(destino, nuevo)}",
+        mention_author=False
+    )
+    await actualizar_panel_stock()
+
+
+@bot.command(name="publicarstock")
+@commands.has_permissions(administrator=True)
+async def publicarstock(ctx):
+    """Actualiza el panel de stock en el canal configurado (STOCK_CHANNEL_ID)."""
+    if not STOCK_CHANNEL_ID:
+        await ctx.reply(
+            "⚠️ `STOCK_CHANNEL_ID` está en `0`. Pon el ID del canal staff en el código y reinicia.\n"
+            "Mientras tanto puedes usar `!stock`.",
+            mention_author=False
+        )
+        return
+    await actualizar_panel_stock()
+    await ctx.reply("✅ Panel de stock actualizado.", mention_author=False)
+
 # ===============================
 # READY
 # ===============================
@@ -3818,6 +4195,7 @@ async def on_ready():
     await actualizar_rankings_secundaria()
     await actualizar_estado_evento()
     await sincronizar_mensajes_revision()
+    await actualizar_panel_stock()
 
 # ===============================
 # ERROR GLOBAL

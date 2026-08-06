@@ -38,6 +38,9 @@ EVENTO_RANKING_CHANNEL_ID = 1531562510040305715
 # Si queda en 0, igual funcionan los comandos !stock*
 STOCK_CHANNEL_ID = 1534806401606484149
 
+# Canal público de cumpleaños del team (pon el ID real)
+BIRTHDAY_CHANNEL_ID = 0
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
@@ -116,6 +119,7 @@ class ShulkerBot(commands.Bot):
         self.add_view(EndAportadoButton())
         self.add_view(EndReviewView())
         self.add_view(StatsPanelView())
+        self.add_view(BirthdayPanelView())
         print("✅ Vistas persistentes registradas en setup_hook")
 
 bot = ShulkerBot(command_prefix="!", intents=intents)
@@ -254,6 +258,17 @@ CREATE TABLE IF NOT EXISTS shulker_evento (
     fecha TEXT,
     total INTEGER,
     PRIMARY KEY (user_id, fecha)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS birthdays (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    day INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 )
 """)
 
@@ -661,6 +676,341 @@ async def actualizar_panel_stock():
         print("✅ Panel de stock actualizado")
     except Exception as e:
         print(f"❌ Error en actualizar_panel_stock: {e}")
+
+
+# ===============================
+# CUMPLEAÑOS DEL TEAM
+# ===============================
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+    5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+    9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+MESES_EMOJI = {
+    1: "❄️", 2: "💝", 3: "🌸", 4: "🌧️",
+    5: "🌷", 6: "☀️", 7: "🏖️", 8: "🌟",
+    9: "🍂", 10: "🎃", 11: "🍁", 12: "🎄",
+}
+
+
+def parse_cumple_ddmm(texto: str) -> tuple[int, int] | None:
+    t = (texto or "").strip().replace(" ", "")
+    for sep in ("/", "-", "."):
+        if sep in t:
+            parts = t.split(sep)
+            if len(parts) >= 2:
+                try:
+                    d, m = int(parts[0]), int(parts[1])
+                    if 1 <= m <= 12 and 1 <= d <= 31:
+                        date(2024, m, d)  # valida día (29/02 ok en bisiesto)
+                        return d, m
+                except ValueError:
+                    return None
+    return None
+
+
+def next_birthday_date(day: int, month: int, from_date: date | None = None) -> date:
+    base = from_date or today_local()
+    try:
+        este_anio = date(base.year, month, day)
+    except ValueError:
+        este_anio = date(base.year, month, min(day, 28))
+    if este_anio >= base:
+        return este_anio
+    try:
+        return date(base.year + 1, month, day)
+    except ValueError:
+        return date(base.year + 1, month, min(day, 28))
+
+
+def days_until_birthday(day: int, month: int) -> int:
+    return (next_birthday_date(day, month) - today_local()).days
+
+
+def set_birthday(user_id: int, username: str, day: int, month: int):
+    now = local_datetime_str()
+    cursor.execute("""
+        INSERT INTO birthdays (user_id, username, day, month, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = excluded.username,
+            day = excluded.day,
+            month = excluded.month,
+            updated_at = excluded.updated_at
+    """, (user_id, username, day, month, now, now))
+    db.commit()
+
+
+def get_all_birthdays():
+    cursor.execute("""
+        SELECT user_id, username, day, month
+        FROM birthdays
+        ORDER BY month, day
+    """)
+    return cursor.fetchall()
+
+
+def get_birthday(user_id: int):
+    cursor.execute(
+        "SELECT user_id, username, day, month FROM birthdays WHERE user_id = ?",
+        (user_id,)
+    )
+    return cursor.fetchone()
+
+
+def birthdays_sorted_upcoming():
+    items = []
+    for r in get_all_birthdays():
+        d, m = int(r["day"]), int(r["month"])
+        items.append({
+            "user_id": r["user_id"],
+            "username": r["username"],
+            "day": d,
+            "month": m,
+            "days_left": days_until_birthday(d, m),
+            "next_date": next_birthday_date(d, m),
+        })
+    items.sort(key=lambda x: (x["days_left"], x["month"], x["day"]))
+    return items
+
+
+def construir_embed_lista_cumples_ephemeral() -> discord.Embed:
+    hoy = today_local()
+    items = birthdays_sorted_upcoming()
+    embed = discord.Embed(
+        title="🎂✨ LISTA DE CUMPLEAÑOS DEL TEAM ✨🎂",
+        description=(
+            f"📅 Hoy: **{hoy.day} de {MESES_ES[hoy.month]}**\n"
+            f"Orden: del **más próximo** al más lejano\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.from_rgb(255, 105, 180),
+        timestamp=utc_now()
+    )
+    if not items:
+        embed.add_field(
+            name="📭 Sin registros",
+            value="Aún nadie registró su cumpleaños.\n¡Sé el primero con **Registrar mi cumpleaños**!",
+            inline=False
+        )
+        return embed
+
+    lineas = []
+    for i, x in enumerate(items, start=1):
+        if x["days_left"] == 0:
+            badge = "🎉 **¡HOY!**"
+        elif x["days_left"] == 1:
+            badge = "⏰ **mañana**"
+        elif x["days_left"] <= 7:
+            badge = f"🔥 en **{x['days_left']}** días"
+        elif x["days_left"] <= 30:
+            badge = f"✨ en **{x['days_left']}** días"
+        else:
+            badge = f"en **{x['days_left']}** días"
+        mes_e = MESES_EMOJI.get(x["month"], "📅")
+        lineas.append(
+            f"`#{i:02d}` {mes_e} **{x['day']:02d}/{x['month']:02d}** · "
+            f"<@{x['user_id']}> — {badge}"
+        )
+
+    texto = "\n".join(lineas)
+    if len(texto) <= 1024:
+        embed.add_field(name="📋 Miembros", value=texto, inline=False)
+    else:
+        mid = len(lineas) // 2
+        embed.add_field(name="📋 Miembros (1)", value="\n".join(lineas[:mid])[:1024], inline=False)
+        embed.add_field(name="📋 Miembros (2)", value="\n".join(lineas[mid:])[:1024], inline=False)
+
+    embed.set_footer(text=f"💕 {len(items)} registrados · Se borra en ~1 minuto")
+    return embed
+
+
+def construir_embed_panel_cumple_botones() -> discord.Embed:
+    total = len(get_all_birthdays())
+    hoy = today_local()
+    items = birthdays_sorted_upcoming()
+    hoy_n = sum(1 for x in items if x["days_left"] == 0)
+    prox = next((x for x in items if x["days_left"] > 0), None)
+
+    desc = (
+        f"### 🗓️ Celebramos juntos en el team\n"
+        f"Hoy es **{hoy.day} de {MESES_ES[hoy.month]} de {hoy.year}**\n\n"
+        f"**1️⃣ Registrar mi cumpleaños**\n"
+        f"　Solo **día y mes** (sin año). **Una sola vez** — no podrás cambiarlo tú.\n\n"
+        f"**2️⃣ Ver calendario**\n"
+        f"　Lista del más próximo al más lejano. Solo tú la ves ~1 minuto.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎂 Registrados: **{total}**"
+    )
+    if hoy_n:
+        desc += f"\n🥳 Cumpleaños hoy: **{hoy_n}**"
+    if prox:
+        desc += (
+            f"\n🔮 Próximo: <@{prox['user_id']}> "
+            f"(`{prox['day']:02d}/{prox['month']:02d}` · {prox['days_left']} días)"
+        )
+
+    embed = discord.Embed(
+        title="🎂✨ CUMPLEAÑOS — ENDCORE TEAM ✨🎂",
+        description=desc,
+        color=discord.Color.from_rgb(255, 20, 147),
+        timestamp=utc_now()
+    )
+    embed.set_footer(text="Staff: !setcumple / !quitarcumple · Hora Chile")
+    return embed
+
+
+class BirthdayRegisterModal(discord.ui.Modal, title="Registrar mi cumpleaños"):
+    fecha = discord.ui.TextInput(
+        label="Día y mes (sin año)",
+        placeholder="Ej: 15/03",
+        max_length=10,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if get_birthday(interaction.user.id):
+            await interaction.followup.send(
+                "⚠️ Ya registraste tu cumpleaños y **no puedes cambiarlo** tú mismo.\n"
+                "Si hay un error, pide a staff: `!setcumple @tú DD/MM`",
+                ephemeral=True
+            )
+            return
+
+        parsed = parse_cumple_ddmm(str(self.fecha.value))
+        if not parsed:
+            await interaction.followup.send(
+                "❌ Fecha inválida. Usa solo **día/mes**, ejemplo: `15/03`",
+                ephemeral=True
+            )
+            return
+
+        day, month = parsed
+        set_birthday(interaction.user.id, interaction.user.display_name, day, month)
+        dias = days_until_birthday(day, month)
+        if dias == 0:
+            extra = "¡**Es hoy**! 🎉🥳"
+        elif dias == 1:
+            extra = "¡Es **mañana**! ⏰"
+        else:
+            extra = f"Faltan **{dias}** días ✨"
+
+        await interaction.followup.send(
+            f"🎂 ¡Listo! Registrado: **{day:02d} de {MESES_ES[month]}**\n{extra}\n\n"
+            f"_No podrás modificarlo tú. Si falló, avisa a staff._",
+            ephemeral=True
+        )
+        await actualizar_panel_cumpleanos()
+
+
+class BirthdayPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Registrar mi cumpleaños",
+        style=discord.ButtonStyle.primary,
+        emoji="🎂",
+        custom_id="birthday_register_v1"
+    )
+    async def register_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if get_birthday(interaction.user.id):
+            row = get_birthday(interaction.user.id)
+            await interaction.response.send_message(
+                f"⚠️ Ya tienes cumpleaños registrado: "
+                f"**{int(row['day']):02d}/{int(row['month']):02d}**.\n"
+                f"Solo se puede registrar **una vez**. Si está mal, pide a staff "
+                f"`!setcumple @tú DD/MM`.",
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(BirthdayRegisterModal())
+
+    @discord.ui.button(
+        label="Ver calendario",
+        style=discord.ButtonStyle.secondary,
+        emoji="📅",
+        custom_id="birthday_list_v1"
+    )
+    async def list_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = construir_embed_lista_cumples_ephemeral()
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            msg = await interaction.original_response()
+        except Exception:
+            return
+
+        async def _borrar():
+            await asyncio.sleep(60)
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+
+        asyncio.create_task(_borrar())
+
+
+async def actualizar_panel_cumpleanos():
+    try:
+        if not BIRTHDAY_CHANNEL_ID:
+            return
+        channel = bot.get_channel(BIRTHDAY_CHANNEL_ID)
+        if not channel:
+            print("⚠️ No se encontró BIRTHDAY_CHANNEL_ID")
+            return
+
+        embed = construir_embed_panel_cumple_botones()
+        msg = await obtener_mensaje_fijo(channel, "panel_cumple_botones")
+        await msg.edit(content=None, embed=embed, view=BirthdayPanelView())
+        print("✅ Panel de cumpleaños actualizado")
+    except Exception as e:
+        print(f"❌ Error en actualizar_panel_cumpleanos: {e}")
+
+
+async def anunciar_cumpleanos_del_dia():
+    try:
+        if not BIRTHDAY_CHANNEL_ID:
+            return
+        channel = bot.get_channel(BIRTHDAY_CHANNEL_ID)
+        if not channel:
+            return
+
+        hoy = today_local()
+        key = f"birthday_announced_{hoy.isoformat()}"
+        if get_progress_value(key, ""):
+            return
+
+        items = [x for x in birthdays_sorted_upcoming() if x["days_left"] == 0]
+        if not items:
+            set_progress_value(key, "none")
+            return
+
+        menciones = " ".join(f"<@{x['user_id']}>" for x in items)
+        nombres = ", ".join(f"**{x['username']}**" for x in items)
+
+        embed = discord.Embed(
+            title="🎉🥳 ¡HOY HAY CUMPLEAÑOS EN EL TEAM! 🥳🎉",
+            description=(
+                f"### Hoy celebramos a {nombres}\n\n"
+                f"🎈 Que tengas un día increíble\n"
+                f"🎁 Gracias por ser parte de **Endcore Team**\n"
+                f"💜 ¡Todos a felicitar en el chat!\n\n"
+                f"{menciones}"
+            ),
+            color=discord.Color.from_rgb(255, 20, 147),
+            timestamp=utc_now()
+        )
+        embed.set_footer(text="🎂 Felicidades del team completo")
+
+        await channel.send(content=f"🎊 ¡Cumpleaños! {menciones}", embed=embed)
+        set_progress_value(key, "sent")
+        await actualizar_panel_cumpleanos()
+        print(f"🎂 Anuncio de cumpleaños enviado: {nombres}")
+    except Exception as e:
+        print(f"❌ Error en anunciar_cumpleanos_del_dia: {e}")
+
 
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
     cursor.execute("SELECT message_id FROM mensajes_fijos WHERE tipo = ?", (tipo,))
@@ -2282,6 +2632,9 @@ async def ranking_automatico():
     await actualizar_rankings_end()
     await actualizar_rankings_secundaria()
     await actualizar_estado_evento()
+    await actualizar_panel_stock()
+    await actualizar_panel_cumpleanos()
+    await anunciar_cumpleanos_del_dia()
 
 async def actualizar_shulker_post_registro(
     interaction: discord.Interaction,
@@ -4161,6 +4514,87 @@ async def publicarstock(ctx):
     await actualizar_panel_stock()
     await ctx.reply("✅ Panel de stock actualizado.", mention_author=False)
 
+
+# ===============================
+# COMANDOS CUMPLEAÑOS
+# ===============================
+@bot.command(name="micumple")
+async def micumple(ctx, fecha: str):
+    """Registra tu cumpleaños (solo una vez). Mejor usa el botón del canal. Uso: !micumple 15/03"""
+    if get_birthday(ctx.author.id):
+        row = get_birthday(ctx.author.id)
+        await ctx.reply(
+            f"⚠️ Ya registraste tu cumpleaños "
+            f"(**{int(row['day']):02d}/{int(row['month']):02d}**).\n"
+            f"No puedes cambiarlo tú. Si está mal: staff `!setcumple @tú DD/MM`.",
+            mention_author=False
+        )
+        return
+    parsed = parse_cumple_ddmm(fecha)
+    if not parsed:
+        await ctx.reply("❌ Fecha inválida. Usa `DD/MM` (ej: `!micumple 15/03`).", mention_author=False)
+        return
+    day, month = parsed
+    set_birthday(ctx.author.id, ctx.author.display_name, day, month)
+    dias = days_until_birthday(day, month)
+    extra = "¡**Es hoy**! 🎉" if dias == 0 else ("¡Es **mañana**!" if dias == 1 else f"Faltan **{dias}** días.")
+    await ctx.reply(
+        f"🎂 Guardado: **{day:02d} de {MESES_ES[month]}**.\n{extra}",
+        mention_author=False
+    )
+    await actualizar_panel_cumpleanos()
+
+
+@bot.command(name="setcumple")
+@commands.has_permissions(administrator=True)
+async def setcumple(ctx, member: discord.Member, fecha: str):
+    """Staff: !setcumple @user 15/03"""
+    parsed = parse_cumple_ddmm(fecha)
+    if not parsed:
+        await ctx.reply("❌ Fecha inválida. Usa `DD/MM`.", mention_author=False)
+        return
+    day, month = parsed
+    set_birthday(member.id, member.display_name, day, month)
+    await ctx.reply(
+        f"✅ Cumpleaños de {member.mention}: **{day:02d}/{month:02d}** ({day} de {MESES_ES[month]}).",
+        mention_author=False
+    )
+    await actualizar_panel_cumpleanos()
+
+
+@bot.command(name="quitarcumple")
+@commands.has_permissions(administrator=True)
+async def quitarcumple(ctx, member: discord.Member):
+    """Staff: elimina el cumpleaños de un miembro."""
+    cursor.execute("DELETE FROM birthdays WHERE user_id = ?", (member.id,))
+    db.commit()
+    await ctx.reply(f"🗑️ Cumpleaños de {member.mention} eliminado.", mention_author=False)
+    await actualizar_panel_cumpleanos()
+
+
+@bot.command(name="cumples")
+async def cumples(ctx):
+    """Muestra la lista de cumpleaños (próximos primero)."""
+    await ctx.reply(embed=construir_embed_lista_cumples_ephemeral(), mention_author=False)
+
+
+@bot.command(name="publicarcumples")
+@commands.has_permissions(administrator=True)
+async def publicarcumples(ctx):
+    """Publica/actualiza el panel con botones en el canal de cumpleaños."""
+    if not BIRTHDAY_CHANNEL_ID:
+        await ctx.reply(
+            "⚠️ `BIRTHDAY_CHANNEL_ID` está en `0`. Pon el ID del canal y reinicia.\n"
+            "Preview de la lista:",
+            mention_author=False
+        )
+        await ctx.send(embed=construir_embed_lista_cumples_ephemeral())
+        return
+    await actualizar_panel_cumpleanos()
+    await anunciar_cumpleanos_del_dia()
+    await ctx.reply("✅ Panel de cumpleaños actualizado.", mention_author=False)
+
+
 # ===============================
 # READY
 # ===============================
@@ -4196,6 +4630,8 @@ async def on_ready():
     await actualizar_estado_evento()
     await sincronizar_mensajes_revision()
     await actualizar_panel_stock()
+    await actualizar_panel_cumpleanos()
+    await anunciar_cumpleanos_del_dia()
 
 # ===============================
 # ERROR GLOBAL

@@ -66,6 +66,111 @@ FUNCION_LOCK_DAYS = 8
 # Mínimos solo cuentan semanas que TERMINEN en o después de esta fecha
 MINIMOS_ACTIVE_FROM = date(2026, 8, 10)
 
+# ===============================
+# EMOJIS DEL SERVIDOR
+# ===============================
+# Nombres exactos de tus emojis custom (el bot resuelve el ID solo).
+E_FALLBACK = {
+    "check": "✅",
+    "verify": "✅",
+    "blkverified": "☑️",
+    "xmark": "❌",
+    "crown": "👑",
+    "booster": "💎",
+    "admin_tq": "🛡️",
+    "admin_purple": "🛡️",
+    "headadmin": "🛡️",
+    "bugnet": "🗡️",
+    "pink": "🩷",
+    "sepia": "🟤",
+    "black": "⚫",
+    "violet": "🟣",
+    "sunglow": "🟡",
+    "blue": "🔵",
+    "red": "🔴",
+    "lime": "🟢",
+    "orange": "🟠",
+    "trophy": "🏆",
+    "sword": "⚔️",
+    "fire": "🔥",
+    "star": "⭐",
+    "gem": "💎",
+    "box": "📦",
+    "chart": "📊",
+    "island": "🏝️",
+    "leaf": "🌿",
+    "rock": "🪨",
+    "pickaxe": "⛏️",
+    "brick": "🧱",
+    "build": "🏗️",
+    "warn": "⚠️",
+    "lock": "🔒",
+    "medal1": "🥇",
+    "medal2": "🥈",
+    "medal3": "🥉",
+    "mvp": "🏅",
+    "calendar": "📅",
+    "sparkle": "✨",
+    "team": "💜",
+}
+
+E_SERVER_NAMES = {
+    "check": "3004squarecheckmark",
+    "verify": "7064verify",
+    "blkverified": "1133blkverified",
+    "xmark": "8118xmark",
+    "crown": "158897crown",
+    "booster": "16218booster",
+    "admin_tq": "83513adminturquoise",
+    "admin_purple": "71188admindarkpurple",
+    "headadmin": "257259headadmin",
+    "bugnet": "9830_bugnet",
+    "pink": "4958rolepinkflamingo",
+    "sepia": "645863rolesepia",
+    "black": "655252roleblack",
+    "violet": "579121roleviolet",
+    "sunglow": "516110rolesunglow",
+    "blue": "497543roleblue",
+    "red": "438088rolered",
+    "lime": "206716roleelectriclime",
+    "orange": "414787roleorange",
+}
+
+E = dict(E_FALLBACK)
+_emoji_cache: dict[str, str] = {}
+
+
+def em(key: str) -> str:
+    """Emoji custom del server si existe; si no, fallback unicode."""
+    if key in _emoji_cache:
+        return _emoji_cache[key]
+    fallback = E_FALLBACK.get(key, "•")
+    name = E_SERVER_NAMES.get(key)
+    if not name:
+        _emoji_cache[key] = fallback
+        return fallback
+    try:
+        if bot.is_ready():
+            for g in bot.guilds:
+                found = discord.utils.get(g.emojis, name=name)
+                if found is not None:
+                    s = str(found)
+                    _emoji_cache[key] = s
+                    E[key] = s
+                    return s
+    except Exception:
+        pass
+    _emoji_cache[key] = fallback
+    return fallback
+
+
+def refresh_emoji_cache():
+    _emoji_cache.clear()
+    for k in list(E_FALLBACK.keys()) + list(E_SERVER_NAMES.keys()):
+        em(k)
+    n = sum(1 for k in E_SERVER_NAMES if _emoji_cache.get(k) != E_FALLBACK.get(k))
+    print(f"✅ Emojis custom cargados: {n}/{len(E_SERVER_NAMES)}")
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
@@ -178,6 +283,24 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except Exception:
         return None
+
+
+def discord_ts(dt: datetime | date | None = None, style: str = "f") -> str:
+    """
+    Timestamp de Discord: cada usuario lo ve en SU zona horaria.
+    Estilos: t T d D f F R
+    """
+    if dt is None:
+        dt = utc_now()
+    if isinstance(dt, date) and not isinstance(dt, datetime):
+        dt = datetime(dt.year, dt.month, dt.day, 0, 0, 0, tzinfo=CHILE_TZ)
+    if isinstance(dt, datetime) and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC_TZ)
+    return f"<t:{int(dt.timestamp())}:{style}>"
+
+
+def footer_hora_local() -> str:
+    return f"Actualizado {discord_ts(None, 'f')} · tu hora local"
 
 # ===============================
 # TABLAS
@@ -728,7 +851,7 @@ async def actualizar_panel_stock():
             value=f"`{total:,}` shulkers (`{tpv}` PVs + `{trest}`)",
             inline=False
         )
-        embed.set_footer(text="Staff: !stocksumar | !stockquitar | !stockset | Hora Chile")
+        embed.set_footer(text=f"Staff: !stocksumar | !stockquitar | !stockset | {footer_hora_local()}")
 
         msg = await obtener_mensaje_fijo(channel, "panel_stock_end")
         await msg.edit(content=None, embed=embed)
@@ -915,7 +1038,7 @@ def construir_embed_panel_cumple_botones() -> discord.Embed:
         color=discord.Color.from_rgb(255, 20, 147),
         timestamp=utc_now()
     )
-    embed.set_footer(text="Staff: !setcumple / !quitarcumple · Hora Chile")
+    embed.set_footer(text=f"Staff: !setcumple / !quitarcumple · {footer_hora_local()}")
     return embed
 
 
@@ -1154,67 +1277,70 @@ def texto_dm_funcion_asignada(funcion_key: str) -> str:
         FUNCIONES_TEAM[funcion_key][2],
         FUNCIONES_TEAM[funcion_key][3],
     )
-    inicio = MINIMOS_ACTIVE_FROM.strftime("%d/%m/%Y")
 
     base = (
-        f"📋 **Función asignada — Endcore Team**\n\n"
+        f"{em('team')} **Función asignada — Endcore Team** {em('verify')}\n\n"
         f"Ahora eres **{emoji} {label}**\n"
         f"_{desc}_\n\n"
     )
 
     if funcion_key == "minero":
         base += (
-            f"**Tu responsabilidad**\n"
-            f"• Aportar End al team (con evidencia en el canal de End aportada)\n"
-            f"• Mínimo semanal: **1 PV** = `{MIN_SHULKERS_MINERO_SEMANA}` shulkers **aportadas** "
+            f"{em('pickaxe')} **Tu responsabilidad**\n"
+            f"{em('check')} Aportar End al team (con evidencia en End aportada)\n"
+            f"{em('check')} Mínimo semanal: **1 PV** = `{MIN_SHULKERS_MINERO_SEMANA}` shulkers **aportadas** "
             f"(solo cuenta lo que staff apruebe)\n\n"
-            f"**Cómo cuenta el bot**\n"
-            f"• El conteo de tu mínimo empieza **desde el momento en que elegiste este rol**\n"
-            f"• Se revisa por **semana** (lunes a domingo, hora Chile)\n"
-            f"• Los mínimos oficiales aplican a partir del **{inicio}**\n\n"
-            f"**Candado del rol**\n"
-            f"• Durante **{FUNCION_LOCK_DAYS} días** no puedes quitarte el rol tú mismo "
-            f"(así nadie evade el mínimo)\n\n"
-            f"**Si no cumples**\n"
-            f"• Se te quita el rol y recibes advertencia por MD\n"
-            f"• **Strike +1** (máximo {MAX_STRIKES_FUNCION})\n"
-            f"• A la **{MAX_STRIKES_FUNCION}ª** semana sin cumplir → estado **restringido** "
-            f"y el staff puede expulsarte del clan\n"
-            f"• Si cumples una semana, tus strikes de ese rol vuelven a **0**\n\n"
-            f"Revisa tu progreso con `!miminimo`\n"
-            f"¡Gracias por aportar al team! ⛏️"
+            f"{em('chart')} **Cómo cuenta el bot**\n"
+            f"{em('blue')} El conteo empieza **desde que elegiste este rol**\n"
+            f"{em('blue')} Se revisa por **semana del team** (lunes → domingo)\n"
+            f"{em('blue')} Fechas/horas en **tu zona horaria** automáticamente\n"
+            f"{em('calendar')} Mínimos desde: {discord_ts(MINIMOS_ACTIVE_FROM, 'D')}\n"
+            f"{em('calendar')} Ahora: {discord_ts(None, 'F')}\n\n"
+            f"{em('lock')} **Candado del rol**\n"
+            f"{em('orange')} Bloqueado **{FUNCION_LOCK_DAYS} días** (no puedes quitártelo)\n"
+            f"{em('orange')} Se desbloquea: {discord_ts(utc_now() + timedelta(days=FUNCION_LOCK_DAYS), 'F')}\n\n"
+            f"{em('warn')} **Si no cumples**\n"
+            f"{em('xmark')} Se te quita el rol + advertencia por MD\n"
+            f"{em('xmark')} **Strike +1** (máx. {MAX_STRIKES_FUNCION})\n"
+            f"{em('headadmin')} A la **{MAX_STRIKES_FUNCION}ª** falta → **restringido** "
+            f"(posible expulsión del clan)\n"
+            f"{em('check')} Si cumples una semana, strikes de ese rol → **0**\n\n"
+            f"Progreso: `!miminimo`\n"
+            f"{em('team')} ¡Gracias por aportar al team!"
         )
     elif funcion_key == "obrero":
         base += (
-            f"**Tu responsabilidad**\n"
-            f"• Colocar End en las islas y registrarla en el bot\n"
-            f"• Mínimo semanal: **1 PV** = `{MIN_SHULKERS_OBRERO_SEMANA}` shulkers **colocadas** "
-            f"(Isla Principal + Secundaria; el Evento no cuenta para este mínimo)\n\n"
-            f"**Cómo cuenta el bot**\n"
-            f"• El conteo de tu mínimo empieza **desde el momento en que elegiste este rol**\n"
-            f"• Se revisa por **semana** (lunes a domingo, hora Chile)\n"
-            f"• Los mínimos oficiales aplican a partir del **{inicio}**\n\n"
-            f"**Candado del rol**\n"
-            f"• Durante **{FUNCION_LOCK_DAYS} días** no puedes quitarte el rol tú mismo "
-            f"(así nadie evade el mínimo)\n\n"
-            f"**Si no cumples**\n"
-            f"• Se te quita el rol y recibes advertencia por MD\n"
-            f"• **Strike +1** (máximo {MAX_STRIKES_FUNCION})\n"
-            f"• A la **{MAX_STRIKES_FUNCION}ª** semana sin cumplir → estado **restringido** "
-            f"y el staff puede expulsarte del clan\n"
-            f"• Si cumples una semana, tus strikes de ese rol vuelven a **0**\n\n"
-            f"Revisa tu progreso con `!miminimo`\n"
-            f"¡Gracias por construir el team con End! 🧱"
+            f"{em('brick')} **Tu responsabilidad**\n"
+            f"{em('check')} Colocar End en las islas y registrarla\n"
+            f"{em('check')} Mínimo semanal: **1 PV** = `{MIN_SHULKERS_OBRERO_SEMANA}` shulkers **colocadas** "
+            f"(Principal + Secundaria; Evento no cuenta)\n\n"
+            f"{em('chart')} **Cómo cuenta el bot**\n"
+            f"{em('lime')} El conteo empieza **desde que elegiste este rol**\n"
+            f"{em('lime')} Se revisa por **semana del team** (lunes → domingo)\n"
+            f"{em('lime')} Fechas/horas en **tu zona horaria** automáticamente\n"
+            f"{em('calendar')} Mínimos desde: {discord_ts(MINIMOS_ACTIVE_FROM, 'D')}\n"
+            f"{em('calendar')} Ahora: {discord_ts(None, 'F')}\n\n"
+            f"{em('lock')} **Candado del rol**\n"
+            f"{em('orange')} Bloqueado **{FUNCION_LOCK_DAYS} días** (no puedes quitártelo)\n"
+            f"{em('orange')} Se desbloquea: {discord_ts(utc_now() + timedelta(days=FUNCION_LOCK_DAYS), 'F')}\n\n"
+            f"{em('warn')} **Si no cumples**\n"
+            f"{em('xmark')} Se te quita el rol + advertencia por MD\n"
+            f"{em('xmark')} **Strike +1** (máx. {MAX_STRIKES_FUNCION})\n"
+            f"{em('headadmin')} A la **{MAX_STRIKES_FUNCION}ª** falta → **restringido** "
+            f"(posible expulsión del clan)\n"
+            f"{em('check')} Si cumples una semana, strikes de ese rol → **0**\n\n"
+            f"Progreso: `!miminimo`\n"
+            f"{em('team')} ¡Gracias por construir el team con End!"
         )
     else:  # constructor
         base += (
-            f"**Tu responsabilidad**\n"
-            f"• Construir y mejorar las islas del team\n"
-            f"• Esta función la **supervisa el staff** (no hay mínimo automático de shulkers)\n\n"
-            f"**Sobre el rol**\n"
-            f"• Puedes quitarte Constructor cuando quieras\n"
-            f"• El staff puede pedirte avances o tareas de build\n\n"
-            f"¡Gracias por levantar las islas! 🏗️"
+            f"{em('build')} **Tu responsabilidad**\n"
+            f"{em('check')} Construir y mejorar las islas del team\n"
+            f"{em('admin_purple')} Supervisión del **staff** (sin mínimo automático de shulkers)\n\n"
+            f"{em('blkverified')} **Sobre el rol**\n"
+            f"{em('blue')} Puedes quitarte Constructor cuando quieras\n"
+            f"{em('blue')} El staff puede pedirte avances de build\n\n"
+            f"{em('team')} ¡Gracias por levantar las islas!"
         )
     return base
 
@@ -1397,7 +1523,7 @@ def construir_embed_panel_funciones() -> discord.Embed:
         color=discord.Color.from_rgb(88, 101, 242),
         timestamp=utc_now()
     )
-    embed.set_footer(text="Multi-rol · !miminimo · Staff: !funciones · Hora Chile")
+    embed.set_footer(text=f"Multi-rol · !miminimo · {footer_hora_local()}")
     return embed
 
 
@@ -2233,7 +2359,7 @@ def _embed_progreso_isla(
         inline=False
     )
     embed.set_footer(
-        text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'} | Hora Chile"
+        text=f"Base exacta: {base_level:,} | Desde: {base_date or 'sin calibrar'} | {footer_hora_local()}"
     )
     return embed
 
@@ -2376,7 +2502,7 @@ async def crear_embed_ranking(
             inline=False
         )
 
-    embed.set_footer(text=f"{footer} | Hora Chile")
+    embed.set_footer(text=f"{footer} | {footer_hora_local()}")
     return embed
 
 async def crear_embed_ranking_mes_pasado_gamer(
@@ -2449,26 +2575,40 @@ async def crear_embed_ranking_mes_pasado_gamer(
         embed.add_field(name="🏆 Estado", value="`TEMPORADA CERRADA`", inline=True)
         embed.add_field(name="🚀 Aporte", value=f"`{format_number(total_periodo_valor)}` {unidad.upper()}", inline=True)
 
-    embed.set_footer(text=f"{footer} | Hora Chile")
+    embed.set_footer(text=f"{footer} | {footer_hora_local()}")
     return embed
 
 
-def _lineas_top_compacto(datos, unidad: str = "shulkers", limite: int = 5) -> str:
+def _lineas_top_espaciado(datos, unidad: str = "shulkers", limite: int = 5) -> str:
+    """Top con más aire entre filas para que no se vea amontonado."""
     if not datos:
-        return "_Sin registros_"
+        return f"_{em('sparkle')} Sin registros aún_"
     maximo = int(datos[0]["s"] or 0)
-    iconos = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    iconos = [
+        em("medal1"),
+        em("medal2"),
+        em("medal3"),
+        em("blue"),
+        em("violet"),
+    ]
     lines = []
     for i, row in enumerate(datos[:limite], start=1):
         user = cortar_nombre(row["username"], 18)
         total = int(row["s"] or 0)
         pct = int(round((total / maximo) * 100)) if maximo > 0 else 0
         icono = iconos[i - 1] if i <= len(iconos) else f"`#{i}`"
-        bar = barra_progreso(total, maximo, largo=8)
+        bar = barra_progreso(total, maximo, largo=10)
         lines.append(
-            f"{icono} **{user}** — `{format_number(total)}` {unidad} ({pct}%) {bar}"
+            f"{icono}  **{user}**\n"
+            f"　　`{format_number(total)}` {unidad}  ·  **{pct}%**\n"
+            f"　　{bar}"
         )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
+
+
+def _sep_field(embed: discord.Embed):
+    """Separador visual entre secciones del embed."""
+    embed.add_field(name="\u200b", value=f"{em('black')} ──────────────── {em('black')}", inline=False)
 
 
 async def crear_embed_ranking_completo(
@@ -2487,68 +2627,77 @@ async def crear_embed_ranking_completo(
     mostrar_equivalencias: bool = True,
     unidad: str = "shulkers",
 ):
-    """Un solo embed: mes actual + semana + mes pasado."""
+    """Un solo embed: mes actual + semana + mes pasado (más espaciado)."""
     embed = discord.Embed(
         title=titulo,
-        description="Top unificado · menos spam, misma info",
+        description=(
+            f"{em('sparkle')} **RANKING UNIFICADO DEL TEAM** {em('sparkle')}\n"
+            f"Mes actual · Semana · Mes pasado\n"
+            f"{em('black')} ──────────────────── {em('black')}"
+        ),
         color=color,
         timestamp=utc_now()
     )
 
     embed.add_field(
-        name="👑 Temporada actual (mes)",
-        value=_lineas_top_compacto(mensual, unidad),
+        name=f"{em('crown')}  TEMPORADA ACTUAL  ·  MES",
+        value=_lineas_top_espaciado(mensual, unidad),
         inline=False
     )
+    _sep_field(embed)
+
     embed.add_field(
-        name=f"⚔️ Guerra semanal (desde {inicio_semana})",
-        value=_lineas_top_compacto(semanal, unidad),
+        name=f"{em('bugnet')}  GUERRA SEMANAL  ·  DESDE {inicio_semana}",
+        value=_lineas_top_espaciado(semanal, unidad),
         inline=False
     )
+    _sep_field(embed)
 
     if mes_pasado:
         mvp = cortar_nombre(mes_pasado[0]["username"], 18)
         mvp_t = int(mes_pasado[0]["s"] or 0)
         pasado_txt = (
-            f"🏆 MVP: **{mvp}** (`{format_number(mvp_t)}` {unidad})\n"
-            + _lineas_top_compacto(mes_pasado, unidad)
+            f"{em('booster')} **MVP:** **{mvp}** — `{format_number(mvp_t)}` {unidad}\n\n"
+            + _lineas_top_espaciado(mes_pasado, unidad)
         )
     else:
-        pasado_txt = "_Nadie dejó marca el mes pasado_"
+        pasado_txt = f"_{em('sparkle')} Nadie dejó marca el mes pasado_"
     embed.add_field(
-        name=f"👾 Leyendas del mes pasado ({inicio_mes_pasado} → {fin_mes_pasado})",
+        name=f"{em('trophy')}  LEYENDAS DEL MES PASADO  ·  {inicio_mes_pasado} → {fin_mes_pasado}",
         value=pasado_txt[:1024],
         inline=False
     )
+    _sep_field(embed)
 
     if mostrar_equivalencias:
         _, niv_m, pv_m, rest_m = equivalencias(total_mensual)
         _, niv_s, pv_s, rest_s = equivalencias(total_semanal)
         _, niv_p, pv_p, rest_p = equivalencias(total_mes_pasado)
         embed.add_field(
-            name="📊 Totales",
+            name=f"{em('chart')}  TOTALES DEL PERIODO",
             value=(
-                f"**Mes:** `{format_number(total_mensual)}` sh · "
-                f"`{format_number(niv_m)}` niv · `{pv_m}` PVs + `{rest_m}`\n"
-                f"**Semana:** `{format_number(total_semanal)}` sh · "
-                f"`{pv_s}` PVs + `{rest_s}`\n"
-                f"**Mes pasado:** `{format_number(total_mes_pasado)}` sh · "
-                f"`{pv_p}` PVs + `{rest_p}`"
+                f"**MES**\n"
+                f"　`{format_number(total_mensual)}` shulkers\n"
+                f"　`{format_number(niv_m)}` niveles  ·  `{pv_m}` PVs + `{rest_m}`\n\n"
+                f"**SEMANA**\n"
+                f"　`{format_number(total_semanal)}` shulkers  ·  `{pv_s}` PVs + `{rest_s}`\n\n"
+                f"**MES PASADO**\n"
+                f"　`{format_number(total_mes_pasado)}` shulkers  ·  `{pv_p}` PVs + `{rest_p}`"
             ),
             inline=False
         )
     else:
         embed.add_field(
-            name="📊 Totales",
+            name=f"{em('chart')}  TOTALES DEL PERIODO",
             value=(
-                f"**Mes:** `{format_number(total_mensual)}` {unidad}\n"
-                f"**Semana:** `{format_number(total_semanal)}` {unidad}\n"
-                f"**Mes pasado:** `{format_number(total_mes_pasado)}` {unidad}"
+                f"**MES**  ·  `{format_number(total_mensual)}` {unidad}\n\n"
+                f"**SEMANA**  ·  `{format_number(total_semanal)}` {unidad}\n\n"
+                f"**MES PASADO**  ·  `{format_number(total_mes_pasado)}` {unidad}"
             ),
             inline=False
         )
 
-    embed.set_footer(text="Hora Chile · 1 embed por ranking")
+    embed.set_footer(text=footer_hora_local())
     return embed
 
 
@@ -2631,7 +2780,7 @@ async def actualizar_todos_los_ranking():
         )
 
         embed = await crear_embed_ranking_completo(
-            "🏝️ ISLA PRINCIPAL — RANKING",
+            f"{em('island')}  ISLA PRINCIPAL  —  RANKING",
             discord.Color.purple(),
             mensual,
             semanal,
@@ -2719,7 +2868,7 @@ async def actualizar_rankings_secundaria():
         )
 
         embed = await crear_embed_ranking_completo(
-            "🌿 ISLA SECUNDARIA — RANKING",
+            f"{em('leaf')}  ISLA SECUNDARIA  —  RANKING",
             discord.Color.teal(),
             mensual,
             semanal,
@@ -2822,7 +2971,7 @@ def construir_embed_evento_activo():
     if EVENTO_REGLAS:
         embed.add_field(name="📜 Reglas", value=EVENTO_REGLAS[:1024], inline=False)
 
-    embed.set_footer(text=f"Desde {EVENTO_START_DATE} | Hora Chile")
+    embed.set_footer(text=f"Desde {EVENTO_START_DATE} | {footer_hora_local()}")
     return embed
 
 
@@ -2881,7 +3030,7 @@ def construir_embed_evento_terminado():
 
     if EVENTO_RECOMPENSAS:
         embed.add_field(name="🎁 Recompensas", value=EVENTO_RECOMPENSAS[:1024], inline=False)
-    embed.set_footer(text="Panel permanente del evento cerrado | Hora Chile")
+    embed.set_footer(text=f"Panel permanente del evento cerrado | {footer_hora_local()}")
     return embed
 
 
@@ -2972,7 +3121,7 @@ async def actualizar_rankings_end():
         )
 
         embed = await crear_embed_ranking_completo(
-            "🪨 END APORTADA — RANKING",
+            f"{em('rock')}  END APORTADA  —  RANKING",
             discord.Color.dark_gray(),
             mensual,
             semanal,
@@ -3246,7 +3395,7 @@ def build_personal_stats_embed(member: discord.abc.User) -> discord.Embed:
         inline=False
     )
 
-    embed.set_footer(text=f"Usuario: {member.display_name} | Hora Chile")
+    embed.set_footer(text=f"Usuario: {member.display_name} | {footer_hora_local()}")
     return embed
 
 # ===============================
@@ -4691,7 +4840,7 @@ async def estadoisla(ctx, destino: str = "principal"):
     embed.add_field(name="Shulkers desde base", value=f"`{nuevos_sh:,}`", inline=True)
     embed.add_field(name="Niveles ganados", value=f"`{niveles_ganados:,}`", inline=True)
     embed.add_field(name="Nivel estimado", value=f"`{nivel_estimado:,}`", inline=True)
-    embed.set_footer(text=f"Base tomada desde: {base_date} | Hora Chile")
+    embed.set_footer(text=f"Base tomada desde: {base_date} | {footer_hora_local()}")
     await ctx.reply(embed=embed, mention_author=False)
 
 @bot.command(name="publicarbotones")
@@ -5414,7 +5563,7 @@ async def funciones_cmd(ctx):
             value=valor[:1024],
             inline=False
         )
-    embed.set_footer(text=desc if False else "Multi-rol · Hora Chile")
+    embed.set_footer(text=footer_hora_local())
     await ctx.reply(embed=embed, mention_author=False)
 
 
@@ -5718,6 +5867,7 @@ async def forzarquitarfuncion(ctx, member: discord.Member, funcion: str):
 # ===============================
 @bot.event
 async def on_ready():
+    refresh_emoji_cache()
     print(f"✅ Bot conectado como {bot.user}")
     print(f"📂 DB: {DB_PATH}")
     print(f"📌 Start date: {BOT_START_DATE}")

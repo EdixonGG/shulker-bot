@@ -41,6 +41,21 @@ STOCK_CHANNEL_ID = 1534806401606484149
 # Canal público de cumpleaños del team (pon el ID real)
 BIRTHDAY_CHANNEL_ID = 1534821447141294080
 
+# ===============================
+# FUNCIONES DEL TEAM (multi-rol)
+# ===============================
+FUNCIONES_CHANNEL_ID = 1535185391727157398
+ROLE_MINERO_ID = 1535184004721156166
+ROLE_OBRERO_ID = 1535184284938149888
+ROLE_CONSTRUCTOR_ID = 1535184214448799864
+
+# key -> (role_id, emoji, label, descripcion)
+FUNCIONES_TEAM = {
+    "minero": (ROLE_MINERO_ID, "⛏️", "Minero", "Farma y aporta End"),
+    "obrero": (ROLE_OBRERO_ID, "🧱", "Obrero", "Coloca End en las islas"),
+    "constructor": (ROLE_CONSTRUCTOR_ID, "🏗️", "Constructor", "Construye en las islas"),
+}
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
@@ -120,6 +135,7 @@ class ShulkerBot(commands.Bot):
         self.add_view(EndReviewView())
         self.add_view(StatsPanelView())
         self.add_view(BirthdayPanelView())
+        self.add_view(FuncionesPanelView())
         print("✅ Vistas persistentes registradas en setup_hook")
 
 bot = ShulkerBot(command_prefix="!", intents=intents)
@@ -269,6 +285,16 @@ CREATE TABLE IF NOT EXISTS birthdays (
     month INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS member_functions (
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    funcion TEXT NOT NULL,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, funcion)
 )
 """)
 
@@ -1010,6 +1036,188 @@ async def anunciar_cumpleanos_del_dia():
         print(f"🎂 Anuncio de cumpleaños enviado: {nombres}")
     except Exception as e:
         print(f"❌ Error en anunciar_cumpleanos_del_dia: {e}")
+
+
+# ===============================
+# FUNCIONES DEL TEAM (Minero / Obrero / Constructor)
+# ===============================
+def get_user_functions(user_id: int) -> list[str]:
+    cursor.execute(
+        "SELECT funcion FROM member_functions WHERE user_id = ? ORDER BY funcion",
+        (user_id,)
+    )
+    return [r["funcion"] for r in cursor.fetchall()]
+
+
+def set_user_function(user_id: int, username: str, funcion: str, active: bool):
+    if active:
+        cursor.execute("""
+            INSERT OR REPLACE INTO member_functions (user_id, username, funcion, assigned_at)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, username, funcion, local_datetime_str()))
+    else:
+        cursor.execute(
+            "DELETE FROM member_functions WHERE user_id = ? AND funcion = ?",
+            (user_id, funcion)
+        )
+    db.commit()
+
+
+def count_function(funcion: str) -> int:
+    cursor.execute(
+        "SELECT COUNT(*) AS c FROM member_functions WHERE funcion = ?",
+        (funcion,)
+    )
+    row = cursor.fetchone()
+    return int(row["c"] or 0)
+
+
+def list_users_by_function(funcion: str):
+    cursor.execute("""
+        SELECT user_id, username, assigned_at
+        FROM member_functions
+        WHERE funcion = ?
+        ORDER BY username COLLATE NOCASE
+    """, (funcion,))
+    return cursor.fetchall()
+
+
+def construir_embed_panel_funciones() -> discord.Embed:
+    lineas_count = []
+    for key, (_, emoji, label, desc) in FUNCIONES_TEAM.items():
+        n = count_function(key)
+        lineas_count.append(f"{emoji} **{label}:** `{n}` miembros — _{desc}_")
+
+    embed = discord.Embed(
+        title="📋 FUNCIONES DEL TEAM — ENDCORE",
+        description=(
+            "### Elige tu(s) función(es) en el team\n"
+            "Puedes tener **más de una**. Pulsa de nuevo para quitarla.\n\n"
+            "⛏️ **Minero** — Farma y **aporta End**\n"
+            "🧱 **Obrero** — **Coloca End** en las islas\n"
+            "🏗️ **Constructor** — **Construye** en las islas\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            + "\n".join(lineas_count)
+        ),
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=utc_now()
+    )
+    embed.set_footer(text="Multi-rol · Staff: !funciones · Hora Chile")
+    return embed
+
+
+class FuncionesPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _toggle(
+        self,
+        interaction: discord.Interaction,
+        funcion_key: str,
+    ):
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "❌ Solo se puede usar dentro del servidor.",
+                ephemeral=True
+            )
+            return
+
+        if funcion_key not in FUNCIONES_TEAM:
+            await interaction.response.send_message("❌ Función inválida.", ephemeral=True)
+            return
+
+        role_id, emoji, label, desc = FUNCIONES_TEAM[funcion_key]
+        role = interaction.guild.get_role(role_id) if interaction.guild else None
+        if role is None:
+            await interaction.response.send_message(
+                f"❌ No se encontró el rol de **{label}** en el servidor.\n"
+                f"Revisa que el bot pueda verlo y que el ID sea correcto.",
+                ephemeral=True
+            )
+            return
+
+        member = interaction.user
+        tiene = role in member.roles
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if tiene:
+                await member.remove_roles(role, reason="Función del team desactivada")
+                set_user_function(member.id, member.display_name, funcion_key, False)
+                msg = f"➖ Quitaste **{emoji} {label}**.\n_{desc}_"
+            else:
+                await member.add_roles(role, reason="Función del team activada")
+                set_user_function(member.id, member.display_name, funcion_key, True)
+                msg = f"➕ Ahora eres **{emoji} {label}**.\n_{desc}_"
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ No pude cambiar tu rol. El bot necesita permiso **Gestionar roles** "
+                "y su rol debe estar **por encima** de Minero/Obrero/Constructor.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error al actualizar rol: `{e}`",
+                ephemeral=True
+            )
+            return
+
+        activas = get_user_functions(member.id)
+        if activas:
+            nombres = []
+            for k in activas:
+                e, lab = FUNCIONES_TEAM[k][1], FUNCIONES_TEAM[k][2]
+                nombres.append(f"{e} {lab}")
+            msg += f"\n\n📋 Tus funciones: **{', '.join(nombres)}**"
+        else:
+            msg += "\n\n📋 Ahora no tienes ninguna función asignada."
+
+        await interaction.followup.send(msg, ephemeral=True)
+        await actualizar_panel_funciones()
+
+    @discord.ui.button(
+        label="Minero",
+        style=discord.ButtonStyle.primary,
+        emoji="⛏️",
+        custom_id="func_team_minero_v1"
+    )
+    async def btn_minero(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "minero")
+
+    @discord.ui.button(
+        label="Obrero",
+        style=discord.ButtonStyle.primary,
+        emoji="🧱",
+        custom_id="func_team_obrero_v1"
+    )
+    async def btn_obrero(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "obrero")
+
+    @discord.ui.button(
+        label="Constructor",
+        style=discord.ButtonStyle.primary,
+        emoji="🏗️",
+        custom_id="func_team_constructor_v1"
+    )
+    async def btn_constructor(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "constructor")
+
+
+async def actualizar_panel_funciones():
+    try:
+        if not FUNCIONES_CHANNEL_ID:
+            return
+        channel = bot.get_channel(FUNCIONES_CHANNEL_ID)
+        if not channel:
+            print("⚠️ No se encontró FUNCIONES_CHANNEL_ID")
+            return
+        embed = construir_embed_panel_funciones()
+        msg = await obtener_mensaje_fijo(channel, "panel_funciones_team")
+        await msg.edit(content=None, embed=embed, view=FuncionesPanelView())
+        print("✅ Panel de funciones actualizado")
+    except Exception as e:
+        print(f"❌ Error en actualizar_panel_funciones: {e}")
 
 
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
@@ -2635,6 +2843,7 @@ async def ranking_automatico():
     await actualizar_panel_stock()
     await actualizar_panel_cumpleanos()
     await anunciar_cumpleanos_del_dia()
+    await actualizar_panel_funciones()
 
 async def actualizar_shulker_post_registro(
     interaction: discord.Interaction,
@@ -4596,6 +4805,65 @@ async def publicarcumples(ctx):
 
 
 # ===============================
+# COMANDOS FUNCIONES DEL TEAM
+# ===============================
+@bot.command(name="publicarfunciones")
+@commands.has_permissions(administrator=True)
+async def publicarfunciones(ctx):
+    """Publica/actualiza el panel de funciones (Minero/Obrero/Constructor)."""
+    await actualizar_panel_funciones()
+    await ctx.reply("✅ Panel de funciones actualizado.", mention_author=False)
+
+
+@bot.command(name="funciones")
+@commands.has_permissions(administrator=True)
+async def funciones_cmd(ctx):
+    """Lista miembros por función del team."""
+    embed = discord.Embed(
+        title="📋 Miembros por función",
+        color=discord.Color.blurple(),
+        timestamp=utc_now()
+    )
+    for key, (_, emoji, label, desc) in FUNCIONES_TEAM.items():
+        rows = list_users_by_function(key)
+        if not rows:
+            valor = "_Nadie aún_"
+        else:
+            valor = "\n".join(
+                f"• <@{r['user_id']}>" for r in rows[:40]
+            )
+            if len(rows) > 40:
+                valor += f"\n_… y {len(rows) - 40} más_"
+        embed.add_field(
+            name=f"{emoji} {label} ({len(rows)})",
+            value=valor[:1024],
+            inline=False
+        )
+    embed.set_footer(text=desc if False else "Multi-rol · Hora Chile")
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="misfunciones")
+async def misfunciones(ctx):
+    """Muestra tus funciones activas en el team."""
+    activas = get_user_functions(ctx.author.id)
+    if not activas:
+        await ctx.reply(
+            "No tienes funciones asignadas. Ve al canal de funciones y elige con los botones.",
+            mention_author=False
+        )
+        return
+    nombres = []
+    for k in activas:
+        e, lab, d = FUNCIONES_TEAM[k][1], FUNCIONES_TEAM[k][2], FUNCIONES_TEAM[k][3]
+        nombres.append(f"{e} **{lab}** — _{d}_")
+    await ctx.reply(
+        "**Tus funciones:**\n" + "\n".join(nombres),
+        mention_author=False
+    )
+
+
+# ===============================
 # READY
 # ===============================
 @bot.event
@@ -4632,6 +4900,7 @@ async def on_ready():
     await actualizar_panel_stock()
     await actualizar_panel_cumpleanos()
     await anunciar_cumpleanos_del_dia()
+    await actualizar_panel_funciones()
 
 # ===============================
 # ERROR GLOBAL

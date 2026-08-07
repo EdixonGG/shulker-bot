@@ -63,6 +63,8 @@ MAX_STRIKES_FUNCION = 3           # 3ª semana sin cumplir → restringido
 ROLE_RESTRINGIDO_ID = 0           # opcional; 0 = solo marca en DB
 # Al elegir Minero/Obrero no pueden quitarse el rol N días (anti-evasión del mínimo)
 FUNCION_LOCK_DAYS = 8
+# Mínimos solo cuentan semanas que TERMINEN en o después de esta fecha
+MINIMOS_ACTIVE_FROM = date(2026, 8, 10)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -1143,6 +1145,80 @@ def format_duration(seconds: int) -> str:
     return f"{m}m"
 
 
+def texto_dm_funcion_asignada(funcion_key: str) -> str:
+    """Mensaje privado al elegir una función del team."""
+    if funcion_key not in FUNCIONES_TEAM:
+        return ""
+    emoji, label, desc = (
+        FUNCIONES_TEAM[funcion_key][1],
+        FUNCIONES_TEAM[funcion_key][2],
+        FUNCIONES_TEAM[funcion_key][3],
+    )
+    inicio = MINIMOS_ACTIVE_FROM.strftime("%d/%m/%Y")
+
+    base = (
+        f"📋 **Función asignada — Endcore Team**\n\n"
+        f"Ahora eres **{emoji} {label}**\n"
+        f"_{desc}_\n\n"
+    )
+
+    if funcion_key == "minero":
+        base += (
+            f"**Tu responsabilidad**\n"
+            f"• Aportar End al team (con evidencia en el canal de End aportada)\n"
+            f"• Mínimo semanal: **1 PV** = `{MIN_SHULKERS_MINERO_SEMANA}` shulkers **aportadas** "
+            f"(solo cuenta lo que staff apruebe)\n\n"
+            f"**Cómo cuenta el bot**\n"
+            f"• El conteo de tu mínimo empieza **desde el momento en que elegiste este rol**\n"
+            f"• Se revisa por **semana** (lunes a domingo, hora Chile)\n"
+            f"• Los mínimos oficiales aplican a partir del **{inicio}**\n\n"
+            f"**Candado del rol**\n"
+            f"• Durante **{FUNCION_LOCK_DAYS} días** no puedes quitarte el rol tú mismo "
+            f"(así nadie evade el mínimo)\n\n"
+            f"**Si no cumples**\n"
+            f"• Se te quita el rol y recibes advertencia por MD\n"
+            f"• **Strike +1** (máximo {MAX_STRIKES_FUNCION})\n"
+            f"• A la **{MAX_STRIKES_FUNCION}ª** semana sin cumplir → estado **restringido** "
+            f"y el staff puede expulsarte del clan\n"
+            f"• Si cumples una semana, tus strikes de ese rol vuelven a **0**\n\n"
+            f"Revisa tu progreso con `!miminimo`\n"
+            f"¡Gracias por aportar al team! ⛏️"
+        )
+    elif funcion_key == "obrero":
+        base += (
+            f"**Tu responsabilidad**\n"
+            f"• Colocar End en las islas y registrarla en el bot\n"
+            f"• Mínimo semanal: **1 PV** = `{MIN_SHULKERS_OBRERO_SEMANA}` shulkers **colocadas** "
+            f"(Isla Principal + Secundaria; el Evento no cuenta para este mínimo)\n\n"
+            f"**Cómo cuenta el bot**\n"
+            f"• El conteo de tu mínimo empieza **desde el momento en que elegiste este rol**\n"
+            f"• Se revisa por **semana** (lunes a domingo, hora Chile)\n"
+            f"• Los mínimos oficiales aplican a partir del **{inicio}**\n\n"
+            f"**Candado del rol**\n"
+            f"• Durante **{FUNCION_LOCK_DAYS} días** no puedes quitarte el rol tú mismo "
+            f"(así nadie evade el mínimo)\n\n"
+            f"**Si no cumples**\n"
+            f"• Se te quita el rol y recibes advertencia por MD\n"
+            f"• **Strike +1** (máximo {MAX_STRIKES_FUNCION})\n"
+            f"• A la **{MAX_STRIKES_FUNCION}ª** semana sin cumplir → estado **restringido** "
+            f"y el staff puede expulsarte del clan\n"
+            f"• Si cumples una semana, tus strikes de ese rol vuelven a **0**\n\n"
+            f"Revisa tu progreso con `!miminimo`\n"
+            f"¡Gracias por construir el team con End! 🧱"
+        )
+    else:  # constructor
+        base += (
+            f"**Tu responsabilidad**\n"
+            f"• Construir y mejorar las islas del team\n"
+            f"• Esta función la **supervisa el staff** (no hay mínimo automático de shulkers)\n\n"
+            f"**Sobre el rol**\n"
+            f"• Puedes quitarte Constructor cuando quieras\n"
+            f"• El staff puede pedirte avances o tareas de build\n\n"
+            f"¡Gracias por levantar las islas! 🏗️"
+        )
+    return base
+
+
 def count_function(funcion: str) -> int:
     cursor.execute(
         "SELECT COUNT(*) AS c FROM member_functions WHERE funcion = ?",
@@ -1431,6 +1507,16 @@ class FuncionesPanelView(discord.ui.View):
                     )
                 elif funcion_key == "constructor":
                     msg += "\n👀 Esta función la supervisa el **staff** (puedes quitarla cuando quieras)."
+
+                # MD con reglas completas al asignar
+                try:
+                    await member.send(texto_dm_funcion_asignada(funcion_key))
+                    msg += "\n📩 Te envié la explicación completa por **privado**."
+                except Exception:
+                    msg += (
+                        "\n⚠️ No pude enviarte MD (¿tienes mensajes directos cerrados?). "
+                        "Abre DMs del server para recibir las reglas del rol."
+                    )
         except discord.Forbidden:
             await interaction.followup.send(
                 "❌ No pude cambiar tu rol. El bot necesita permiso **Gestionar roles** "
@@ -1527,6 +1613,12 @@ async def evaluar_minimos_semana_anterior():
             return
 
         ini, fin = week_date_bounds(semana)
+        # No evaluar semanas anteriores al lanzamiento oficial de mínimos
+        if date.fromisoformat(fin) < MINIMOS_ACTIVE_FROM:
+            set_progress_value(flag_key, f"skipped_before_{MINIMOS_ACTIVE_FROM}")
+            print(f"⏭️ Semana {semana} omitida (antes de MINIMOS_ACTIVE_FROM={MINIMOS_ACTIVE_FROM})")
+            return
+
         print(f"🔎 Evaluando mínimos de la semana {semana} ({ini} → {fin})")
 
         guild = None
@@ -5343,6 +5435,113 @@ async def evaluarminimos(ctx):
     await ctx.reply(f"⏳ Evaluando mínimos de `{semana}`…", mention_author=False)
     await evaluar_minimos_semana_anterior()
     await ctx.reply("✅ Evaluación terminada (revisa logs / MDs enviados).", mention_author=False)
+
+
+@bot.command(name="repararminimos")
+@commands.has_permissions(administrator=True)
+async def repararminimos(ctx):
+    """
+    REPARACIÓN: borra strikes/restricciones por el falso positivo,
+    marca semanas viejas como omitidas y envía disculpa por MD.
+    Uso: !repararminimos
+    """
+    await ctx.reply(
+        "⏳ Reparando strikes, quitando restricciones y enviando disculpas…",
+        mention_author=False
+    )
+
+    # Usuarios que tenían strikes o estaban restringidos
+    cursor.execute("""
+        SELECT DISTINCT user_id FROM function_strikes WHERE strikes > 0
+    """)
+    ids_strikes = {int(r["user_id"]) for r in cursor.fetchall()}
+
+    cursor.execute("""
+        SELECT user_id FROM member_status WHERE status = 'restricted'
+    """)
+    ids_rest = {int(r["user_id"]) for r in cursor.fetchall()}
+
+    afectados = ids_strikes | ids_rest
+
+    # Reset total de strikes
+    cursor.execute("UPDATE function_strikes SET strikes = 0, last_fail_week = NULL, updated_at = ?",
+                   (local_datetime_str(),))
+    # Quitar restringidos
+    cursor.execute("""
+        UPDATE member_status
+        SET status = 'active', restricted_at = NULL, reason = NULL
+        WHERE status = 'restricted'
+    """)
+    # Marcar semanas evaluadas antes del lanzamiento como omitidas (no volver a castigar)
+    for wid in (previous_week_id(), current_week_id(), week_id_from_date(today_local() - timedelta(days=14))):
+        ini, fin = week_date_bounds(wid)
+        if date.fromisoformat(fin) < MINIMOS_ACTIVE_FROM:
+            set_progress_value(
+                f"minimos_evaluados_{wid}",
+                f"skipped_before_{MINIMOS_ACTIVE_FROM}"
+            )
+        else:
+            # borrar flag de la semana actual de evaluación errónea reciente
+            cursor.execute(
+                "DELETE FROM island_progress WHERE key = ?",
+                (f"minimos_evaluados_{wid}",)
+            )
+    # Forzar omitir explícitamente W31 y similares recientes si terminaron antes del 10 ago
+    for delta in range(0, 21):
+        wid = week_id_from_date(today_local() - timedelta(days=delta))
+        _, fin = week_date_bounds(wid)
+        if date.fromisoformat(fin) < MINIMOS_ACTIVE_FROM:
+            set_progress_value(
+                f"minimos_evaluados_{wid}",
+                f"skipped_before_{MINIMOS_ACTIVE_FROM}"
+            )
+    db.commit()
+
+    disculpa = (
+        "🙏 **Disculpas — Endcore Team / Shulker Tracker**\n\n"
+        "La advertencia de **mínimo semanal** que recibiste fue un **error del sistema** "
+        "(se evaluó una semana anterior al inicio oficial de los mínimos).\n\n"
+        "✅ Tus **strikes quedaron en 0**\n"
+        "✅ **No** estás restringido por ese aviso\n"
+        "✅ Puedes **volver a elegir** tu rol (Minero / Obrero / Constructor) y empezar de cero\n\n"
+        f"Los mínimos reales empiezan a contar desde el **{MINIMOS_ACTIVE_FROM.strftime('%d/%m/%Y')}**.\n"
+        "Lamentamos la confusión."
+    )
+
+    enviados = 0
+    fallidos = 0
+    for uid in afectados:
+        try:
+            user = await bot.fetch_user(uid)
+            await user.send(disculpa)
+            enviados += 1
+            await asyncio.sleep(0.4)
+        except Exception:
+            fallidos += 1
+
+    # Si no había registros de strikes pero igual quieres avisar a quienes tienen función
+    if not afectados:
+        cursor.execute("SELECT DISTINCT user_id FROM member_functions")
+        extra = [int(r["user_id"]) for r in cursor.fetchall()]
+        for uid in extra:
+            try:
+                user = await bot.fetch_user(uid)
+                await user.send(disculpa)
+                enviados += 1
+                await asyncio.sleep(0.4)
+            except Exception:
+                fallidos += 1
+
+    await actualizar_panel_funciones()
+    await ctx.reply(
+        f"✅ Reparación lista.\n"
+        f"· Strikes reseteados a 0\n"
+        f"· Restricciones quitadas\n"
+        f"· Semanas previas a `{MINIMOS_ACTIVE_FROM}` marcadas como omitidas\n"
+        f"· Disculpas enviadas: `{enviados}` · fallidas (MD cerrado): `{fallidos}`\n\n"
+        f"Los miembros ya pueden volver a elegir rol en el canal de funciones.",
+        mention_author=False
+    )
 
 
 @bot.command(name="strikes")

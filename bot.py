@@ -56,6 +56,14 @@ FUNCIONES_TEAM = {
     "constructor": (ROLE_CONSTRUCTOR_ID, "🏗️", "Constructor", "Construye en las islas"),
 }
 
+# Mínimos semanales (1 PV = 27 shulkers)
+MIN_SHULKERS_MINERO_SEMANA = 27   # 1 PV End APORTADA
+MIN_SHULKERS_OBRERO_SEMANA = 27   # 1 PV End COLOCADA (principal+secundaria)
+MAX_STRIKES_FUNCION = 3           # 3ª semana sin cumplir → restringido
+ROLE_RESTRINGIDO_ID = 0           # opcional; 0 = solo marca en DB
+# Al elegir Minero/Obrero no pueden quitarse el rol N días (anti-evasión del mínimo)
+FUNCION_LOCK_DAYS = 8
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 COOLDOWN_SECONDS = 60
@@ -298,6 +306,28 @@ CREATE TABLE IF NOT EXISTS member_functions (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS function_strikes (
+    user_id INTEGER NOT NULL,
+    funcion TEXT NOT NULL,
+    strikes INTEGER NOT NULL DEFAULT 0,
+    last_fail_week TEXT,
+    last_ok_week TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (user_id, funcion)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS member_status (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    restricted_at TEXT,
+    reason TEXT
+)
+""")
+
 # Índices para consultas rápidas de rankings
 for tabla in ("shulker", "shulker_secundaria", "shulker_evento", "end_aportado"):
     cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tabla}_fecha ON {tabla}(fecha)")
@@ -397,6 +427,7 @@ def asegurar_columna_si_no_existe(tabla: str, columna: str, definicion: str):
 asegurar_columna_si_no_existe("end_requests", "rejection_reason", "TEXT")
 asegurar_columna_si_no_existe("end_requests", "ubicacion", "TEXT")
 asegurar_columna_si_no_existe("pending_end_uploads", "ubicacion", "TEXT")
+asegurar_columna_si_no_existe("member_functions", "locked_until", "TEXT")
 
 # ===============================
 # UTILIDADES
@@ -1049,18 +1080,67 @@ def get_user_functions(user_id: int) -> list[str]:
     return [r["funcion"] for r in cursor.fetchall()]
 
 
-def set_user_function(user_id: int, username: str, funcion: str, active: bool):
+def set_user_function(
+    user_id: int,
+    username: str,
+    funcion: str,
+    active: bool,
+    lock_days: int | None = None,
+):
     if active:
+        locked_until = None
+        if lock_days and lock_days > 0:
+            locked_until = (
+                utc_now() + timedelta(days=int(lock_days))
+            ).isoformat()
         cursor.execute("""
-            INSERT OR REPLACE INTO member_functions (user_id, username, funcion, assigned_at)
-            VALUES (?, ?, ?, ?)
-        """, (user_id, username, funcion, local_datetime_str()))
+            INSERT OR REPLACE INTO member_functions
+            (user_id, username, funcion, assigned_at, locked_until)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, username, funcion, local_datetime_str(), locked_until))
     else:
         cursor.execute(
             "DELETE FROM member_functions WHERE user_id = ? AND funcion = ?",
             (user_id, funcion)
         )
     db.commit()
+
+
+def get_function_lock_remaining(user_id: int, funcion: str) -> int:
+    """Segundos restantes de bloqueo para no quitar el rol. 0 = libre."""
+    cursor.execute(
+        "SELECT locked_until FROM member_functions WHERE user_id = ? AND funcion = ?",
+        (user_id, funcion)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    try:
+        locked = row["locked_until"]
+    except (KeyError, IndexError, TypeError):
+        return 0
+    if not locked:
+        return 0
+    exp = parse_iso_datetime(locked)
+    if not exp:
+        return 0
+    # asegurar comparable con utc_now()
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=UTC_TZ)
+    restante = int((exp - utc_now()).total_seconds())
+    return max(0, restante)
+
+
+def format_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    d = seconds // 86400
+    h = (seconds % 86400) // 3600
+    m = (seconds % 3600) // 60
+    if d > 0:
+        return f"{d}d {h}h"
+    if h > 0:
+        return f"{h}h {m}m"
+    return f"{m}m"
 
 
 def count_function(funcion: str) -> int:
@@ -1082,6 +1162,137 @@ def list_users_by_function(funcion: str):
     return cursor.fetchall()
 
 
+def week_id_from_date(d: date) -> str:
+    """Semana ISO (lunes-domingo), ej: 2026-W32"""
+    iso = d.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def current_week_id() -> str:
+    return week_id_from_date(today_local())
+
+
+def previous_week_id() -> str:
+    return week_id_from_date(today_local() - timedelta(days=7))
+
+
+def week_date_bounds(week_id: str) -> tuple[str, str]:
+    """Devuelve (fecha_inicio, fecha_fin) inclusive YYYY-MM-DD para un week_id ISO."""
+    year_s, week_s = week_id.split("-W")
+    year, week = int(year_s), int(week_s)
+    start = date.fromisocalendar(year, week, 1)
+    end = date.fromisocalendar(year, week, 7)
+    return str(start), str(end)
+
+
+def sum_end_aportada_periodo(user_id: int, fecha_ini: str, fecha_fin: str) -> int:
+    cursor.execute("""
+        SELECT COALESCE(SUM(total), 0) AS s
+        FROM end_aportado
+        WHERE user_id = ? AND fecha >= ? AND fecha <= ?
+    """, (user_id, fecha_ini, fecha_fin))
+    return int(cursor.fetchone()["s"] or 0)
+
+
+def sum_end_colocada_periodo(user_id: int, fecha_ini: str, fecha_fin: str) -> int:
+    """Principal + secundaria (no evento)."""
+    total = 0
+    for tabla in ("shulker", "shulker_secundaria"):
+        cursor.execute(f"""
+            SELECT COALESCE(SUM(total), 0) AS s
+            FROM {tabla}
+            WHERE user_id = ? AND fecha >= ? AND fecha <= ?
+        """, (user_id, fecha_ini, fecha_fin))
+        total += int(cursor.fetchone()["s"] or 0)
+    return total
+
+
+def get_strikes(user_id: int, funcion: str) -> int:
+    cursor.execute(
+        "SELECT strikes, last_fail_week FROM function_strikes WHERE user_id = ? AND funcion = ?",
+        (user_id, funcion)
+    )
+    row = cursor.fetchone()
+    return int(row["strikes"] or 0) if row else 0
+
+
+def get_strike_row(user_id: int, funcion: str):
+    cursor.execute(
+        "SELECT strikes, last_fail_week, last_ok_week FROM function_strikes WHERE user_id = ? AND funcion = ?",
+        (user_id, funcion)
+    )
+    return cursor.fetchone()
+
+
+def set_strikes(user_id: int, funcion: str, strikes: int, fail_week: str | None = None, ok_week: str | None = None):
+    cursor.execute(
+        "SELECT strikes, last_fail_week, last_ok_week FROM function_strikes WHERE user_id = ? AND funcion = ?",
+        (user_id, funcion)
+    )
+    row = cursor.fetchone()
+    prev_fail = row["last_fail_week"] if row else None
+    prev_ok = row["last_ok_week"] if row else None
+    cursor.execute("""
+        INSERT INTO function_strikes (user_id, funcion, strikes, last_fail_week, last_ok_week, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, funcion) DO UPDATE SET
+            strikes = excluded.strikes,
+            last_fail_week = COALESCE(excluded.last_fail_week, function_strikes.last_fail_week),
+            last_ok_week = COALESCE(excluded.last_ok_week, function_strikes.last_ok_week),
+            updated_at = excluded.updated_at
+    """, (
+        user_id,
+        funcion,
+        max(0, int(strikes)),
+        fail_week if fail_week is not None else prev_fail,
+        ok_week if ok_week is not None else prev_ok,
+        local_datetime_str(),
+    ))
+    db.commit()
+
+
+def is_member_restricted(user_id: int) -> bool:
+    cursor.execute("SELECT status FROM member_status WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    return bool(row and row["status"] == "restricted")
+
+
+def set_member_restricted(user_id: int, username: str, reason: str):
+    cursor.execute("""
+        INSERT INTO member_status (user_id, username, status, restricted_at, reason)
+        VALUES (?, ?, 'restricted', ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = excluded.username,
+            status = 'restricted',
+            restricted_at = excluded.restricted_at,
+            reason = excluded.reason
+    """, (user_id, username, local_datetime_str(), reason))
+    db.commit()
+
+
+def clear_member_restricted(user_id: int):
+    cursor.execute("""
+        INSERT INTO member_status (user_id, status, restricted_at, reason)
+        VALUES (?, 'active', NULL, NULL)
+        ON CONFLICT(user_id) DO UPDATE SET
+            status = 'active',
+            restricted_at = NULL,
+            reason = NULL
+    """, (user_id,))
+    db.commit()
+
+
+def progreso_semana_funcion(user_id: int, funcion: str, week_id: str | None = None) -> tuple[int, int]:
+    """Returns (actual_shulkers, minimo_shulkers) for that function/week."""
+    wid = week_id or current_week_id()
+    ini, fin = week_date_bounds(wid)
+    if funcion == "minero":
+        return sum_end_aportada_periodo(user_id, ini, fin), MIN_SHULKERS_MINERO_SEMANA
+    if funcion == "obrero":
+        return sum_end_colocada_periodo(user_id, ini, fin), MIN_SHULKERS_OBRERO_SEMANA
+    return 0, 0
+
+
 def construir_embed_panel_funciones() -> discord.Embed:
     lineas_count = []
     for key, (_, emoji, label, desc) in FUNCIONES_TEAM.items():
@@ -1094,15 +1305,23 @@ def construir_embed_panel_funciones() -> discord.Embed:
             "### Elige tu(s) función(es) en el team\n"
             "Puedes tener **más de una**. Pulsa de nuevo para quitarla.\n\n"
             "⛏️ **Minero** — Farmea y **aporta End**\n"
+            f"　Mínimo semanal: **1 PV** (`{MIN_SHULKERS_MINERO_SEMANA}` shulkers aportadas)\n"
             "🧱 **Obrero** — **Coloca End** en las islas\n"
-            "🏗️ **Constructor** — **Construye** en las islas\n\n"
+            f"　Mínimo semanal: **1 PV** (`{MIN_SHULKERS_OBRERO_SEMANA}` shulkers colocadas)\n"
+            "🏗️ **Constructor** — **Construye** en las islas\n"
+            "　Supervisión del **staff** (sin mínimo automático)\n\n"
+            f"⚠️ Si no cumples el mínimo, se te **quita el rol** y recibes aviso por MD.\n"
+            f"A la **{MAX_STRIKES_FUNCION}ª** semana sin cumplir → usuario **restringido**.\n\n"
+            f"🔒 **Minero/Obrero:** al elegir el rol queda **bloqueado {FUNCION_LOCK_DAYS} días** "
+            f"(no puedes quitártelo). Así nadie evade el mínimo.\n"
+            f"🏗️ Constructor se puede quitar libremente (lo supervisa staff).\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             + "\n".join(lineas_count)
         ),
         color=discord.Color.from_rgb(88, 101, 242),
         timestamp=utc_now()
     )
-    embed.set_footer(text="Multi-rol · Staff: !funciones · Hora Chile")
+    embed.set_footer(text="Multi-rol · !miminimo · Staff: !funciones · Hora Chile")
     return embed
 
 
@@ -1140,15 +1359,78 @@ class FuncionesPanelView(discord.ui.View):
         tiene = role in member.roles
         await interaction.response.defer(ephemeral=True)
 
+        if is_member_restricted(member.id) and not tiene:
+            await interaction.followup.send(
+                "🚫 Estás **restringido** por incumplir mínimos varias semanas.\n"
+                "No puedes tomar funciones hasta que staff revise tu caso "
+                "(`!quitarrestriccion` solo staff).",
+                ephemeral=True
+            )
+            return
+
         try:
             if tiene:
+                # Candado anti-evasión: Minero/Obrero no se pueden quitar durante N días
+                if funcion_key in ("minero", "obrero"):
+                    restante = get_function_lock_remaining(member.id, funcion_key)
+                    if restante > 0:
+                        await interaction.followup.send(
+                            f"🔒 No puedes quitar **{emoji} {label}** todavía.\n"
+                            f"Al elegirlo queda bloqueado **{FUNCION_LOCK_DAYS} días** "
+                            f"para que no se evada el mínimo semanal.\n"
+                            f"Tiempo restante: **{format_duration(restante)}**.\n"
+                            f"_Si hay un error grave, pide a staff `!forzarquitarfuncion`._",
+                            ephemeral=True
+                        )
+                        return
+
                 await member.remove_roles(role, reason="Función del team desactivada")
                 set_user_function(member.id, member.display_name, funcion_key, False)
                 msg = f"➖ Quitaste **{emoji} {label}**.\n_{desc}_"
             else:
+                # Si falló esta semana, solo puede retomar el rol cumpliendo el mínimo
+                if funcion_key in ("minero", "obrero"):
+                    row = get_strike_row(member.id, funcion_key)
+                    last_fail = row["last_fail_week"] if row else None
+                    if last_fail == current_week_id():
+                        actual, minimo = progreso_semana_funcion(member.id, funcion_key)
+                        if actual < minimo:
+                            pv_a, sh_a = shulkers_a_pv_y_shulkers(actual)
+                            pv_m, sh_m = shulkers_a_pv_y_shulkers(minimo)
+                            tipo = "aportada" if funcion_key == "minero" else "colocada"
+                            await interaction.followup.send(
+                                f"⚠️ Esta semana te quitaron **{label}** por no cumplir el mínimo.\n"
+                                f"Para volver a tomarlo debes alcanzar **1 PV** de End **{tipo}** esta semana.\n"
+                                f"Progreso: `{actual}` shulkers (`{pv_a}` PVs + `{sh_a}`) / "
+                                f"mínimo `{minimo}` (`{pv_m}` PVs).",
+                                ephemeral=True
+                            )
+                            return
+
+                lock_days = FUNCION_LOCK_DAYS if funcion_key in ("minero", "obrero") else None
                 await member.add_roles(role, reason="Función del team activada")
-                set_user_function(member.id, member.display_name, funcion_key, True)
+                set_user_function(
+                    member.id,
+                    member.display_name,
+                    funcion_key,
+                    True,
+                    lock_days=lock_days,
+                )
                 msg = f"➕ Ahora eres **{emoji} {label}**.\n_{desc}_"
+                if funcion_key == "minero":
+                    msg += (
+                        f"\n📊 Mínimo semanal: **1 PV** aportada "
+                        f"(`{MIN_SHULKERS_MINERO_SEMANA}` shulkers)."
+                        f"\n🔒 Rol bloqueado **{FUNCION_LOCK_DAYS} días** (no puedes quitártelo)."
+                    )
+                elif funcion_key == "obrero":
+                    msg += (
+                        f"\n📊 Mínimo semanal: **1 PV** colocada "
+                        f"(`{MIN_SHULKERS_OBRERO_SEMANA}` shulkers)."
+                        f"\n🔒 Rol bloqueado **{FUNCION_LOCK_DAYS} días** (no puedes quitártelo)."
+                    )
+                elif funcion_key == "constructor":
+                    msg += "\n👀 Esta función la supervisa el **staff** (puedes quitarla cuando quieras)."
         except discord.Forbidden:
             await interaction.followup.send(
                 "❌ No pude cambiar tu rol. El bot necesita permiso **Gestionar roles** "
@@ -1218,6 +1500,142 @@ async def actualizar_panel_funciones():
         print("✅ Panel de funciones actualizado")
     except Exception as e:
         print(f"❌ Error en actualizar_panel_funciones: {e}")
+
+
+async def _dm_usuario(user_id: int, content: str):
+    try:
+        user = await bot.fetch_user(user_id)
+        await user.send(content)
+    except Exception:
+        pass
+
+
+async def evaluar_minimos_semana_anterior():
+    """
+    Corre 1 vez por semana (lunes en adelante): revisa la semana ISO anterior.
+    Minero → End aportada | Obrero → End colocada.
+    """
+    try:
+        semana = previous_week_id()
+        flag_key = f"minimos_evaluados_{semana}"
+        if get_progress_value(flag_key, ""):
+            return
+
+        # Solo evaluar cuando ya empezó la semana siguiente (lunes+)
+        if today_local().isoweekday() == 7:
+            # domingo: aún no cerramos la semana actual
+            return
+
+        ini, fin = week_date_bounds(semana)
+        print(f"🔎 Evaluando mínimos de la semana {semana} ({ini} → {fin})")
+
+        guild = None
+        for g in bot.guilds:
+            guild = g
+            break
+
+        # Usuarios a revisar: quienes tenían la función en DB
+        for funcion in ("minero", "obrero"):
+            rows = list_users_by_function(funcion)
+            role_id = FUNCIONES_TEAM[funcion][0]
+            emoji, label = FUNCIONES_TEAM[funcion][1], FUNCIONES_TEAM[funcion][2]
+            minimo = MIN_SHULKERS_MINERO_SEMANA if funcion == "minero" else MIN_SHULKERS_OBRERO_SEMANA
+            tipo = "aportada" if funcion == "minero" else "colocada"
+
+            for r in rows:
+                uid = int(r["user_id"])
+                uname = r["username"]
+                if is_member_restricted(uid):
+                    continue
+
+                actual = (
+                    sum_end_aportada_periodo(uid, ini, fin)
+                    if funcion == "minero"
+                    else sum_end_colocada_periodo(uid, ini, fin)
+                )
+
+                if actual >= minimo:
+                    set_strikes(uid, funcion, 0, ok_week=semana)
+                    continue
+
+                # Incumplimiento
+                strikes = get_strikes(uid, funcion) + 1
+                set_strikes(uid, funcion, strikes, fail_week=semana)
+
+                # Quitar rol + DB
+                set_user_function(uid, uname, funcion, False)
+                if guild:
+                    member = guild.get_member(uid)
+                    role = guild.get_role(role_id)
+                    if member and role and role in member.roles:
+                        try:
+                            await member.remove_roles(
+                                role,
+                                reason=f"No cumplió mínimo semanal {funcion} ({semana})"
+                            )
+                        except Exception:
+                            pass
+
+                pv_a, sh_a = shulkers_a_pv_y_shulkers(actual)
+                if strikes >= MAX_STRIKES_FUNCION:
+                    set_member_restricted(
+                        uid, uname,
+                        f"{strikes} semanas sin mínimo de {label} (última: {semana})"
+                    )
+                    # Quitar todas las funciones
+                    for fk in list(FUNCIONES_TEAM.keys()):
+                        set_user_function(uid, uname, fk, False)
+                        rid = FUNCIONES_TEAM[fk][0]
+                        if guild:
+                            mem = guild.get_member(uid)
+                            rol = guild.get_role(rid)
+                            if mem and rol and rol in mem.roles:
+                                try:
+                                    await mem.remove_roles(rol, reason="Usuario restringido")
+                                except Exception:
+                                    pass
+                    if ROLE_RESTRINGIDO_ID and guild:
+                        mem = guild.get_member(uid)
+                        rol_r = guild.get_role(ROLE_RESTRINGIDO_ID)
+                        if mem and rol_r:
+                            try:
+                                await mem.add_roles(rol_r, reason="Restringido por mínimos")
+                            except Exception:
+                                pass
+
+                    await _dm_usuario(
+                        uid,
+                        f"🚫 **Aviso grave — Endcore Team**\n\n"
+                        f"No cumpliste el mínimo de **{emoji} {label}** "
+                        f"({tipo}: `{actual}` shulkers / `{pv_a}` PVs) en la semana `{semana}`.\n"
+                        f"Es la **{strikes}ª** semana sin cumplir.\n\n"
+                        f"Has pasado a estado **RESTRINGIDO**.\n"
+                        f"Se te quitaron las funciones del team.\n"
+                        f"Staff revisará si continúas en el clan.\n"
+                        f"Si crees que es un error, habla con un admin."
+                    )
+                else:
+                    await _dm_usuario(
+                        uid,
+                        f"⚠️ **Advertencia — Endcore Team**\n\n"
+                        f"No cumpliste el mínimo semanal de **{emoji} {label}**.\n"
+                        f"Semana: `{semana}` ({ini} → {fin})\n"
+                        f"Registrado: `{actual}` shulkers (`{pv_a}` PVs + `{sh_a}`) de End **{tipo}**\n"
+                        f"Mínimo: **1 PV** (`{minimo}` shulkers)\n\n"
+                        f"Se te **quitó el rol** de {label}.\n"
+                        f"Puedes volver a tomarlo cuando cumplas el mínimo de **esta** semana.\n\n"
+                        f"Strike: **{strikes}/{MAX_STRIKES_FUNCION}**\n"
+                        f"A la **{MAX_STRIKES_FUNCION}ª** semana sin cumplir quedarás **restringido** "
+                        f"y podrías ser expulsado del clan."
+                    )
+
+                print(f"⚠️ Mínimo fallido: {uname} ({uid}) {funcion} strikes={strikes} actual={actual}")
+
+        set_progress_value(flag_key, local_datetime_str())
+        await actualizar_panel_funciones()
+        print(f"✅ Evaluación de mínimos {semana} terminada")
+    except Exception as e:
+        print(f"❌ Error en evaluar_minimos_semana_anterior: {e}")
 
 
 async def obtener_mensaje_fijo(channel: discord.TextChannel, tipo: str):
@@ -2844,6 +3262,7 @@ async def ranking_automatico():
     await actualizar_panel_cumpleanos()
     await anunciar_cumpleanos_del_dia()
     await actualizar_panel_funciones()
+    await evaluar_minimos_semana_anterior()
 
 async def actualizar_shulker_post_registro(
     interaction: discord.Interaction,
@@ -4863,6 +5282,174 @@ async def misfunciones(ctx):
     )
 
 
+@bot.command(name="miminimo")
+async def miminimo(ctx):
+    """Progreso de mínimos de esta semana (End aportada / colocada)."""
+    uid = ctx.author.id
+    wid = current_week_id()
+    ini, fin = week_date_bounds(wid)
+
+    embed = discord.Embed(
+        title="📊 Tu mínimo semanal",
+        description=f"Semana **{wid}** (`{ini}` → `{fin}`)",
+        color=discord.Color.orange(),
+        timestamp=utc_now()
+    )
+
+    if is_member_restricted(uid):
+        embed.add_field(
+            name="🚫 Estado",
+            value="**RESTRINGIDO** — habla con staff",
+            inline=False
+        )
+
+    for funcion, titulo, tipo in (
+        ("minero", "⛏️ Minero (aportada)", "aportada"),
+        ("obrero", "🧱 Obrero (colocada)", "colocada"),
+    ):
+        actual, minimo = progreso_semana_funcion(uid, funcion, wid)
+        pv_a, sh_a = shulkers_a_pv_y_shulkers(actual)
+        ok = actual >= minimo
+        strikes = get_strikes(uid, funcion)
+        embed.add_field(
+            name=titulo,
+            value=(
+                f"{'✅' if ok else '⏳'} `{actual}` / `{minimo}` shulkers "
+                f"(`{pv_a}` PVs + `{sh_a}`)\n"
+                f"Strikes: **{strikes}/{MAX_STRIKES_FUNCION}**"
+            ),
+            inline=False
+        )
+
+    activas = get_user_functions(uid)
+    embed.add_field(
+        name="📋 Funciones activas",
+        value=", ".join(
+            f"{FUNCIONES_TEAM[k][1]} {FUNCIONES_TEAM[k][2]}" for k in activas
+        ) if activas else "_Ninguna_",
+        inline=False
+    )
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="evaluarminimos")
+@commands.has_permissions(administrator=True)
+async def evaluarminimos(ctx):
+    """Fuerza la evaluación de la semana anterior (admin)."""
+    semana = previous_week_id()
+    # permitir re-ejecutar borrando flag
+    cursor.execute("DELETE FROM island_progress WHERE key = ?", (f"minimos_evaluados_{semana}",))
+    db.commit()
+    await ctx.reply(f"⏳ Evaluando mínimos de `{semana}`…", mention_author=False)
+    await evaluar_minimos_semana_anterior()
+    await ctx.reply("✅ Evaluación terminada (revisa logs / MDs enviados).", mention_author=False)
+
+
+@bot.command(name="strikes")
+@commands.has_permissions(administrator=True)
+async def strikes_cmd(ctx, member: discord.Member):
+    """Ver strikes de mínimos de un miembro."""
+    lines = []
+    for funcion in ("minero", "obrero"):
+        row = get_strike_row(member.id, funcion)
+        s = int(row["strikes"] or 0) if row else 0
+        lf = row["last_fail_week"] if row else "—"
+        lo = row["last_ok_week"] if row else "—"
+        lines.append(
+            f"{FUNCIONES_TEAM[funcion][1]} **{FUNCIONES_TEAM[funcion][2]}**: "
+            f"`{s}/{MAX_STRIKES_FUNCION}` · fail `{lf}` · ok `{lo}`"
+        )
+    estado = "🚫 RESTRINGIDO" if is_member_restricted(member.id) else "✅ Activo"
+    await ctx.reply(
+        f"Strikes de {member.mention}:\n" + "\n".join(lines) + f"\nEstado: {estado}",
+        mention_author=False
+    )
+
+
+@bot.command(name="resetstrikes")
+@commands.has_permissions(administrator=True)
+async def resetstrikes(ctx, member: discord.Member, funcion: str = "all"):
+    """Resetea strikes. Uso: !resetstrikes @user [minero|obrero|all]"""
+    f = (funcion or "all").lower()
+    targets = ["minero", "obrero"] if f == "all" else [f]
+    for t in targets:
+        if t not in ("minero", "obrero"):
+            await ctx.reply("❌ Función: `minero`, `obrero` o `all`.", mention_author=False)
+            return
+        set_strikes(member.id, t, 0)
+    await ctx.reply(f"✅ Strikes reseteados para {member.mention} (`{f}`).", mention_author=False)
+
+
+@bot.command(name="restringidos")
+@commands.has_permissions(administrator=True)
+async def restringidos_cmd(ctx):
+    """Lista usuarios restringidos por mínimos."""
+    cursor.execute("""
+        SELECT user_id, username, restricted_at, reason
+        FROM member_status
+        WHERE status = 'restricted'
+        ORDER BY restricted_at DESC
+    """)
+    rows = cursor.fetchall()
+    if not rows:
+        await ctx.reply("ℹ️ No hay usuarios restringidos.", mention_author=False)
+        return
+    lines = [
+        f"• <@{r['user_id']}> — `{r['restricted_at']}` — {r['reason'] or '—'}"
+        for r in rows[:30]
+    ]
+    await ctx.reply("🚫 **Restringidos:**\n" + "\n".join(lines), mention_author=False)
+
+
+@bot.command(name="quitarrestriccion")
+@commands.has_permissions(administrator=True)
+async def quitarrestriccion(ctx, member: discord.Member):
+    """Quita el estado restringido de un miembro."""
+    clear_member_restricted(member.id)
+    if ROLE_RESTRINGIDO_ID and ctx.guild:
+        rol = ctx.guild.get_role(ROLE_RESTRINGIDO_ID)
+        if rol and rol in member.roles:
+            try:
+                await member.remove_roles(rol, reason="Restricción removida por staff")
+            except Exception:
+                pass
+    for funcion in ("minero", "obrero"):
+        set_strikes(member.id, funcion, 0)
+    await ctx.reply(
+        f"✅ {member.mention} ya no está restringido (strikes en 0).",
+        mention_author=False
+    )
+
+
+@bot.command(name="forzarquitarfuncion")
+@commands.has_permissions(administrator=True)
+async def forzarquitarfuncion(ctx, member: discord.Member, funcion: str):
+    """
+    Quita una función ignorando el candado de 8 días.
+    Uso: !forzarquitarfuncion @user minero|obrero|constructor
+    """
+    f = (funcion or "").strip().lower()
+    if f not in FUNCIONES_TEAM:
+        await ctx.reply("❌ Función: `minero`, `obrero` o `constructor`.", mention_author=False)
+        return
+
+    role_id, emoji, label, _ = FUNCIONES_TEAM[f]
+    set_user_function(member.id, member.display_name, f, False)
+    role = ctx.guild.get_role(role_id) if ctx.guild else None
+    if role and role in member.roles:
+        try:
+            await member.remove_roles(role, reason=f"Staff forzó quitar {label}")
+        except Exception as e:
+            await ctx.reply(f"⚠️ DB actualizada pero no pude quitar el rol Discord: `{e}`", mention_author=False)
+            return
+
+    await ctx.reply(
+        f"✅ Se quitó **{emoji} {label}** a {member.mention} (candado ignorado).",
+        mention_author=False
+    )
+    await actualizar_panel_funciones()
+
+
 # ===============================
 # READY
 # ===============================
@@ -4901,6 +5488,7 @@ async def on_ready():
     await actualizar_panel_cumpleanos()
     await anunciar_cumpleanos_del_dia()
     await actualizar_panel_funciones()
+    await evaluar_minimos_semana_anterior()
 
 # ===============================
 # ERROR GLOBAL

@@ -51,7 +51,7 @@ ROLE_CONSTRUCTOR_ID = 1535184214448799864
 
 # key -> (role_id, emoji, label, descripcion)
 FUNCIONES_TEAM = {
-    "minero": (ROLE_MINERO_ID, "⛏️", "Minero", "Farma y aporta End"),
+    "minero": (ROLE_MINERO_ID, "⛏️", "Minero", "Farmea y aporta End"),
     "obrero": (ROLE_OBRERO_ID, "🧱", "Obrero", "Coloca End en las islas"),
     "constructor": (ROLE_CONSTRUCTOR_ID, "🏗️", "Constructor", "Construye en las islas"),
 }

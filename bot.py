@@ -453,6 +453,25 @@ CREATE TABLE IF NOT EXISTS member_status (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS contabilidad_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo TEXT NOT NULL,
+    user_id INTEGER,
+    username TEXT,
+    destino TEXT,
+    cantidad INTEGER NOT NULL,
+    stock_antes INTEGER,
+    stock_despues INTEGER,
+    ref TEXT,
+    nota TEXT,
+    actor_id INTEGER,
+    created_at TEXT NOT NULL
+)
+""")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_created ON contabilidad_ledger(created_at)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_tipo ON contabilidad_ledger(tipo)")
+
 # Índices para consultas rápidas de rankings
 for tabla in ("shulker", "shulker_secundaria", "shulker_evento", "end_aportado"):
     cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tabla}_fecha ON {tabla}(fecha)")
@@ -775,25 +794,58 @@ def set_stock_shulkers(destino: str, cantidad: int) -> int:
     return cantidad
 
 
-def add_stock_shulkers(destino: str, cantidad: int) -> int:
+def log_contabilidad(
+    tipo: str,
+    cantidad: int,
+    *,
+    user_id: int | None = None,
+    username: str | None = None,
+    destino: str | None = None,
+    stock_antes: int | None = None,
+    stock_despues: int | None = None,
+    ref: str | None = None,
+    nota: str | None = None,
+    actor_id: int | None = None,
+):
+    """Registro de auditoría contable."""
+    try:
+        cursor.execute("""
+            INSERT INTO contabilidad_ledger
+            (tipo, user_id, username, destino, cantidad, stock_antes, stock_despues, ref, nota, actor_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            tipo, user_id, username, destino, int(cantidad),
+            stock_antes, stock_despues, ref, nota, actor_id, local_datetime_str(),
+        ))
+        db.commit()
+    except Exception as e:
+        print(f"⚠️ ledger ({tipo}): {e}")
+
+
+def add_stock_shulkers(destino: str, cantidad: int, **log_kw) -> int:
     if cantidad <= 0:
         return get_stock_shulkers(destino)
-    nuevo = get_stock_shulkers(destino) + int(cantidad)
-    return set_stock_shulkers(destino, nuevo)
+    antes = get_stock_shulkers(destino)
+    nuevo = set_stock_shulkers(destino, antes + int(cantidad))
+    log_contabilidad(
+        "stock_add", int(cantidad),
+        destino=destino, stock_antes=antes, stock_despues=nuevo, **log_kw,
+    )
+    return nuevo
 
 
-def remove_stock_shulkers(destino: str, cantidad: int) -> tuple[int, int]:
-    """
-    Resta del stock sin bajar de 0.
-    Returns: (cantidad_realmente_restada, stock_restante)
-    """
-    if cantidad <= 0:
-        actual = get_stock_shulkers(destino)
-        return 0, actual
+def remove_stock_shulkers(destino: str, cantidad: int, **log_kw) -> tuple[int, int]:
+    """Resta del stock sin bajar de 0. Returns: (restado, stock_restante)"""
     actual = get_stock_shulkers(destino)
+    if cantidad <= 0:
+        return 0, actual
     restado = min(actual, int(cantidad))
-    nuevo = actual - restado
-    set_stock_shulkers(destino, nuevo)
+    nuevo = set_stock_shulkers(destino, actual - restado)
+    if restado > 0:
+        log_contabilidad(
+            "stock_remove", restado,
+            destino=destino, stock_antes=actual, stock_despues=nuevo, **log_kw,
+        )
     return restado, nuevo
 
 
@@ -3568,6 +3620,14 @@ async def ranking_automatico():
     await anunciar_cumpleanos_del_dia()
     await actualizar_panel_funciones()
     await evaluar_minimos_semana_anterior()
+    try:
+        key = f"backup_done_{local_date_str()}"
+        if not get_progress_value(key, ""):
+            path = crear_backup_db("diario")
+            if path:
+                set_progress_value(key, path)
+    except Exception as e:
+        print(f"⚠️ backup auto: {e}")
 
 async def actualizar_shulker_post_registro(
     interaction: discord.Interaction,
@@ -3796,10 +3856,29 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
             }
             nombre_destino = nombres.get(self.destino, self.destino)
 
+            log_contabilidad(
+                "shulker_puesta",
+                cantidad_int,
+                user_id=user_id,
+                username=username,
+                destino=self.destino,
+                ref=f"origen={self.origen}",
+                nota=f"tabla={tabla} total_dia={nuevo_total}",
+                actor_id=user_id,
+            )
+
             # Contabilidad de almacén (solo principal / secundaria)
             stock_msg = ""
             if self.destino in ("principal", "secundaria") and self.origen == "almacen":
-                restado, queda = remove_stock_shulkers(self.destino, cantidad_int)
+                restado, queda = remove_stock_shulkers(
+                    self.destino,
+                    cantidad_int,
+                    user_id=user_id,
+                    username=username,
+                    ref="registro_puesta",
+                    nota="origen=almacen",
+                    actor_id=user_id,
+                )
                 if restado == 0:
                     stock_msg = (
                         f"\n📦 Stock **{nombre_destino}**: no había End en almacén "
@@ -3819,6 +3898,11 @@ class ShulkerModal(discord.ui.Modal, title="Registro de Shulker"):
                 asyncio.create_task(actualizar_panel_stock())
             elif self.destino in ("principal", "secundaria") and self.origen == "propia":
                 stock_msg = "\n🎒 Origen: **propia / otra fuente** (no se restó del almacén)."
+            elif self.destino in ("principal", "secundaria") and self.origen is None:
+                stock_msg = (
+                    "\n⚠️ No se indicó origen (almacén/propia). "
+                    "**No se restó stock**. Avisa a staff si salió del almacén."
+                )
 
             msg = await interaction.followup.send(
                 f"✅ Registro guardado en **{nombre_destino}**.\n"
@@ -4270,6 +4354,16 @@ class EndReviewView(discord.ui.View):
 
             db.commit()
 
+            log_contabilidad(
+                "end_aportada_aprobada",
+                int(request_row["cantidad"] or 0),
+                user_id=int(request_row["user_id"]),
+                username=request_row["username"],
+                ref=f"request#{request_id}",
+                nota=f"fecha={request_row['fecha']}",
+                actor_id=reviewed_by,
+            )
+
             updated_row = get_request_by_id(request_id)
             embed = construir_embed_revision(
                 updated_row,
@@ -4348,7 +4442,15 @@ class StockAsignarView(discord.ui.View):
             )
             return
 
-        nuevo = add_stock_shulkers(destino, self.cantidad)
+        nuevo = add_stock_shulkers(
+            destino,
+            self.cantidad,
+            user_id=interaction.user.id,
+            username=interaction.user.display_name,
+            ref=f"request#{self.request_id}",
+            nota="staff_asigno_stock_post_aprobacion",
+            actor_id=interaction.user.id,
+        )
         nombre = "Isla Principal" if destino == "principal" else "Isla Secundaria"
         pv, resto = shulkers_a_pv_y_shulkers(nuevo)
         await interaction.response.edit_message(
@@ -5860,6 +5962,186 @@ async def forzarquitarfuncion(ctx, member: discord.Member, funcion: str):
         mention_author=False
     )
     await actualizar_panel_funciones()
+
+
+
+# ===============================
+# RESPALDO + REPARACIÓN CONTABLE
+# ===============================
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+MAX_BACKUPS = 14
+
+
+def crear_backup_db(motivo: str = "manual") -> str | None:
+    """Copia en caliente de la DB SQLite."""
+    try:
+        ts = local_now().strftime("%Y%m%d_%H%M%S")
+        dest = os.path.join(BACKUP_DIR, f"shulker_{ts}_{motivo}.db")
+        bck = sqlite3.connect(dest)
+        with bck:
+            db.backup(bck)
+        bck.close()
+        files = sorted(
+            [os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR) if f.endswith(".db")],
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        for old in files[MAX_BACKUPS:]:
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+        print(f"✅ Backup creado: {dest}")
+        return dest
+    except Exception as e:
+        print(f"❌ Backup falló: {e}")
+        return None
+
+
+@bot.command(name="backup")
+@commands.has_permissions(administrator=True)
+async def backup_cmd(ctx):
+    """Crea un respaldo inmediato de la base de datos."""
+    path = await asyncio.to_thread(crear_backup_db, "manual")
+    if not path:
+        await ctx.reply("❌ No se pudo crear el backup. Revisa logs.", mention_author=False)
+        return
+    size = os.path.getsize(path)
+    await ctx.reply(
+        f"✅ Backup creado.\n`{os.path.basename(path)}` ({size:,} bytes)\n"
+        f"Carpeta: `{BACKUP_DIR}`",
+        mention_author=False,
+    )
+
+
+@bot.command(name="repararendaportada")
+@commands.has_permissions(administrator=True)
+async def repararendaportada(ctx):
+    """Reconstruye end_aportado desde solicitudes APROBADAS (completa faltantes)."""
+    cursor.execute("""
+        SELECT user_id, username, fecha, SUM(cantidad) AS s
+        FROM end_requests
+        WHERE status = 'approved'
+        GROUP BY user_id, fecha
+    """)
+    rows = cursor.fetchall()
+    if not rows:
+        await ctx.reply("ℹ️ No hay solicitudes aprobadas.", mention_author=False)
+        return
+
+    corregidos = 0
+    total_added = 0
+    for r in rows:
+        uid = int(r["user_id"])
+        fecha = r["fecha"]
+        debe = int(r["s"] or 0)
+        cursor.execute(
+            "SELECT COALESCE(total, 0) AS t FROM end_aportado WHERE user_id = ? AND fecha = ?",
+            (uid, fecha),
+        )
+        row = cursor.fetchone()
+        tiene = int(row["t"] or 0) if row else 0
+        if debe > tiene:
+            faltan = debe - tiene
+            cursor.execute("""
+                INSERT INTO end_aportado (user_id, username, fecha, total)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, fecha)
+                DO UPDATE SET
+                    total = excluded.total,
+                    username = excluded.username
+            """, (uid, r["username"], fecha, debe))
+            log_contabilidad(
+                "repair_end_aportada",
+                faltan,
+                user_id=uid,
+                username=r["username"],
+                ref=f"fecha={fecha}",
+                nota=f"tenia={tiene} debe={debe}",
+                actor_id=ctx.author.id,
+            )
+            corregidos += 1
+            total_added += faltan
+    db.commit()
+    await actualizar_rankings_end()
+    await ctx.reply(
+        f"✅ Reparación End aportada terminada.\n"
+        f"Días/usuario corregidos: `{corregidos}`\n"
+        f"Shulkers agregadas al ranking: `{total_added}`",
+        mention_author=False,
+    )
+
+
+@bot.command(name="auditarcontabilidad")
+@commands.has_permissions(administrator=True)
+async def auditarcontabilidad(ctx):
+    """Compara solicitudes aprobadas vs end_aportado y muestra stock."""
+    cursor.execute(
+        "SELECT COALESCE(SUM(cantidad),0) AS s FROM end_requests WHERE status='approved'"
+    )
+    aprob = int(cursor.fetchone()["s"] or 0)
+    cursor.execute("SELECT COALESCE(SUM(total),0) AS s FROM end_aportado")
+    aport = int(cursor.fetchone()["s"] or 0)
+    cursor.execute("SELECT COALESCE(SUM(total),0) AS s FROM shulker")
+    pr = int(cursor.fetchone()["s"] or 0)
+    cursor.execute("SELECT COALESCE(SUM(total),0) AS s FROM shulker_secundaria")
+    sec = int(cursor.fetchone()["s"] or 0)
+    sp = get_stock_shulkers("principal")
+    ss = get_stock_shulkers("secundaria")
+    diff = aprob - aport
+    embed = discord.Embed(
+        title="🔎 Auditoría contable",
+        color=discord.Color.orange() if diff != 0 else discord.Color.green(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(
+        name="End aportada",
+        value=(
+            f"Solicitudes aprobadas: `{aprob}`\n"
+            f"En ranking end_aportado: `{aport}`\n"
+            f"Diferencia: `{diff}` "
+            f"{'⚠️ usa !repararendaportada' if diff > 0 else '✅'}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="End colocada (tops)",
+        value=f"Principal: `{pr}`\nSecundaria: `{sec}`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Stock almacén",
+        value=f"Principal: `{sp}`\nSecundaria: `{ss}`",
+        inline=False,
+    )
+    embed.set_footer(text="Stock: !stocksumar / !stockset con evidencia del juego")
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="ledger")
+@commands.has_permissions(administrator=True)
+async def ledger_cmd(ctx, limite: int = 15):
+    """Últimos movimientos del libro contable."""
+    limite = max(1, min(30, limite))
+    cursor.execute("""
+        SELECT tipo, user_id, username, destino, cantidad, stock_antes, stock_despues, ref, created_at
+        FROM contabilidad_ledger
+        ORDER BY id DESC
+        LIMIT ?
+    """, (limite,))
+    rows = cursor.fetchall()
+    if not rows:
+        await ctx.reply("ℹ️ Ledger vacío (aún no hay movimientos nuevos).", mention_author=False)
+        return
+    lines = []
+    for r in rows:
+        lines.append(
+            f"`{r['created_at']}` **{r['tipo']}** `{r['cantidad']}` "
+            f"{r['destino'] or '-'} · {r['username'] or r['user_id'] or '-'} "
+            f"stock {r['stock_antes']}→{r['stock_despues']} · {r['ref'] or ''}"
+        )
+    await ctx.reply("\n".join(lines)[:1900], mention_author=False)
 
 
 # ===============================

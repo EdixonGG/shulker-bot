@@ -1093,7 +1093,7 @@ def construir_embed_panel_funciones() -> discord.Embed:
         description=(
             "### Elige tu(s) función(es) en el team\n"
             "Puedes tener **más de una**. Pulsa de nuevo para quitarla.\n\n"
-            "⛏️ **Minero** — Farma y **aporta End**\n"
+            "⛏️ **Minero** — Farmea y **aporta End**\n"
             "🧱 **Obrero** — **Coloca End** en las islas\n"
             "🏗️ **Constructor** — **Construye** en las islas\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"

@@ -2452,6 +2452,106 @@ async def crear_embed_ranking_mes_pasado_gamer(
     embed.set_footer(text=f"{footer} | Hora Chile")
     return embed
 
+
+def _lineas_top_compacto(datos, unidad: str = "shulkers", limite: int = 5) -> str:
+    if not datos:
+        return "_Sin registros_"
+    maximo = int(datos[0]["s"] or 0)
+    iconos = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    lines = []
+    for i, row in enumerate(datos[:limite], start=1):
+        user = cortar_nombre(row["username"], 18)
+        total = int(row["s"] or 0)
+        pct = int(round((total / maximo) * 100)) if maximo > 0 else 0
+        icono = iconos[i - 1] if i <= len(iconos) else f"`#{i}`"
+        bar = barra_progreso(total, maximo, largo=8)
+        lines.append(
+            f"{icono} **{user}** — `{format_number(total)}` {unidad} ({pct}%) {bar}"
+        )
+    return "\n".join(lines)
+
+
+async def crear_embed_ranking_completo(
+    titulo: str,
+    color: discord.Color,
+    mensual,
+    semanal,
+    mes_pasado,
+    total_mensual: int,
+    total_semanal: int,
+    total_mes_pasado: int,
+    inicio_semana: date,
+    inicio_mes_pasado: date,
+    fin_mes_pasado: date,
+    *,
+    mostrar_equivalencias: bool = True,
+    unidad: str = "shulkers",
+):
+    """Un solo embed: mes actual + semana + mes pasado."""
+    embed = discord.Embed(
+        title=titulo,
+        description="Top unificado · menos spam, misma info",
+        color=color,
+        timestamp=utc_now()
+    )
+
+    embed.add_field(
+        name="👑 Temporada actual (mes)",
+        value=_lineas_top_compacto(mensual, unidad),
+        inline=False
+    )
+    embed.add_field(
+        name=f"⚔️ Guerra semanal (desde {inicio_semana})",
+        value=_lineas_top_compacto(semanal, unidad),
+        inline=False
+    )
+
+    if mes_pasado:
+        mvp = cortar_nombre(mes_pasado[0]["username"], 18)
+        mvp_t = int(mes_pasado[0]["s"] or 0)
+        pasado_txt = (
+            f"🏆 MVP: **{mvp}** (`{format_number(mvp_t)}` {unidad})\n"
+            + _lineas_top_compacto(mes_pasado, unidad)
+        )
+    else:
+        pasado_txt = "_Nadie dejó marca el mes pasado_"
+    embed.add_field(
+        name=f"👾 Leyendas del mes pasado ({inicio_mes_pasado} → {fin_mes_pasado})",
+        value=pasado_txt[:1024],
+        inline=False
+    )
+
+    if mostrar_equivalencias:
+        _, niv_m, pv_m, rest_m = equivalencias(total_mensual)
+        _, niv_s, pv_s, rest_s = equivalencias(total_semanal)
+        _, niv_p, pv_p, rest_p = equivalencias(total_mes_pasado)
+        embed.add_field(
+            name="📊 Totales",
+            value=(
+                f"**Mes:** `{format_number(total_mensual)}` sh · "
+                f"`{format_number(niv_m)}` niv · `{pv_m}` PVs + `{rest_m}`\n"
+                f"**Semana:** `{format_number(total_semanal)}` sh · "
+                f"`{pv_s}` PVs + `{rest_s}`\n"
+                f"**Mes pasado:** `{format_number(total_mes_pasado)}` sh · "
+                f"`{pv_p}` PVs + `{rest_p}`"
+            ),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="📊 Totales",
+            value=(
+                f"**Mes:** `{format_number(total_mensual)}` {unidad}\n"
+                f"**Semana:** `{format_number(total_semanal)}` {unidad}\n"
+                f"**Mes pasado:** `{format_number(total_mes_pasado)}` {unidad}"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(text="Hora Chile · 1 embed por ranking")
+    return embed
+
+
 async def total_periodo(where_sql: str, params: tuple) -> int:
     cursor.execute(f"SELECT COALESCE(SUM(total), 0) AS total FROM shulker WHERE {where_sql}", params)
     row = cursor.fetchone()
@@ -2530,47 +2630,38 @@ async def actualizar_todos_los_ranking():
             str(inicio_mes_actual)
         )
 
-        embed_mensual = await crear_embed_ranking(
-            "TEMPORADA ACTUAL", "👑", discord.Color.purple(), mensual, "Mes en curso", total_mensual
-        )
-        embed_semanal = await crear_embed_ranking(
-            "GUERRA SEMANAL", "⚔️", discord.Color.blue(), semanal, f"Desde {inicio_semana}", total_semanal
-        )
-        embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
-            "LEYENDAS DEL MES PASADO",
-            "👾",
-            discord.Color.orange(),
+        embed = await crear_embed_ranking_completo(
+            "🏝️ ISLA PRINCIPAL — RANKING",
+            discord.Color.purple(),
+            mensual,
+            semanal,
             mensual_pasado,
-            f"{inicio_mes_pasado} a {fin_mes_pasado}",
-            total_mensual_pasado
+            total_mensual,
+            total_semanal,
+            total_mensual_pasado,
+            inicio_semana,
+            inicio_mes_pasado,
+            fin_mes_pasado,
+            mostrar_equivalencias=True,
+            unidad="shulkers",
         )
 
-        await eliminar_mensaje_fijo_si_existe(channel, "ranking_diario")
-
-        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+        for tipo_old in (
+            "ranking_diario",
             "ranking_mes_pasado",
             "ranking_mensual",
             "ranking_semanal",
-        ])
+        ):
+            await eliminar_mensaje_fijo_si_existe(channel, tipo_old)
 
-        await mensajes["ranking_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
-        await mensajes["ranking_mensual"].edit(content=None, embed=embed_mensual)
-        await mensajes["ranking_semanal"].edit(content=None, embed=embed_semanal)
-
+        msg = await obtener_mensaje_fijo(channel, "ranking_principal_unificado")
+        await msg.edit(content=None, embed=embed)
         await limpiar_mensajes_duplicados_por_titulo(
             channel,
-            [
-                embed_mes_pasado.title,
-                embed_mensual.title,
-                embed_semanal.title,
-            ],
-            keep_message_ids=[
-                mensajes["ranking_mes_pasado"].id,
-                mensajes["ranking_mensual"].id,
-                mensajes["ranking_semanal"].id,
-            ]
+            [embed.title],
+            keep_message_ids=[msg.id],
         )
-        print("✅ Rankings shulker actualizados")
+        print("✅ Ranking Principal unificado actualizado")
     except Exception as e:
         print(f"❌ Error en actualizar_todos_los_ranking: {e}")
 
@@ -2627,39 +2718,37 @@ async def actualizar_rankings_secundaria():
             str(inicio_mes_actual)
         )
 
-        embed_mensual = await crear_embed_ranking(
-            "ISLA SECUNDARIA • TEMPORADA ACTUAL", "🏝️", discord.Color.teal(),
-            mensual, "Mes en curso", total_mensual
-        )
-        embed_semanal = await crear_embed_ranking(
-            "ISLA SECUNDARIA • GUERRA SEMANAL", "⚔️", discord.Color.dark_teal(),
-            semanal, f"Desde {inicio_semana}", total_semanal
-        )
-        embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
-            "ISLA SECUNDARIA • LEYENDAS DEL MES PASADO", "👾", discord.Color.dark_green(),
-            mensual_pasado, f"{inicio_mes_pasado} a {fin_mes_pasado}", total_mensual_pasado
+        embed = await crear_embed_ranking_completo(
+            "🌿 ISLA SECUNDARIA — RANKING",
+            discord.Color.teal(),
+            mensual,
+            semanal,
+            mensual_pasado,
+            total_mensual,
+            total_semanal,
+            total_mensual_pasado,
+            inicio_semana,
+            inicio_mes_pasado,
+            fin_mes_pasado,
+            mostrar_equivalencias=True,
+            unidad="shulkers",
         )
 
-        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+        for tipo_old in (
             "ranking_secundaria_mes_pasado",
             "ranking_secundaria_mensual",
             "ranking_secundaria_semanal",
-        ])
+        ):
+            await eliminar_mensaje_fijo_si_existe(channel, tipo_old)
 
-        await mensajes["ranking_secundaria_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
-        await mensajes["ranking_secundaria_mensual"].edit(content=None, embed=embed_mensual)
-        await mensajes["ranking_secundaria_semanal"].edit(content=None, embed=embed_semanal)
-
+        msg = await obtener_mensaje_fijo(channel, "ranking_secundaria_unificado")
+        await msg.edit(content=None, embed=embed)
         await limpiar_mensajes_duplicados_por_titulo(
             channel,
-            [embed_mes_pasado.title, embed_mensual.title, embed_semanal.title],
-            keep_message_ids=[
-                mensajes["ranking_secundaria_mes_pasado"].id,
-                mensajes["ranking_secundaria_mensual"].id,
-                mensajes["ranking_secundaria_semanal"].id,
-            ]
+            [embed.title],
+            keep_message_ids=[msg.id],
         )
-        print("✅ Rankings Isla Secundaria actualizados")
+        print("✅ Ranking Secundaria unificado actualizado")
     except Exception as e:
         print(f"❌ Error en actualizar_rankings_secundaria: {e}")
 
@@ -2882,63 +2971,38 @@ async def actualizar_rankings_end():
             str(inicio_mes_actual)
         )
 
-        embed_mensual = await crear_embed_ranking(
-            "END APORTADA • TEMPORADA ACTUAL",
-            "🪨",
+        embed = await crear_embed_ranking_completo(
+            "🪨 END APORTADA — RANKING",
             discord.Color.dark_gray(),
             mensual,
-            "Mes en curso",
-            total_mensual,
-            mostrar_equivalencias=False,
-            unidad="end aportada"
-        )
-        embed_semanal = await crear_embed_ranking(
-            "END APORTADA • FRENTE SEMANAL",
-            "⛏️",
-            discord.Color.blue(),
             semanal,
-            f"Desde {inicio_semana}",
-            total_semanal,
-            mostrar_equivalencias=False,
-            unidad="end aportada"
-        )
-        embed_mes_pasado = await crear_embed_ranking_mes_pasado_gamer(
-            "END APORTADA • HÉROES DEL MES PASADO",
-            "🪨",
-            discord.Color.dark_orange(),
             mensual_pasado,
-            f"{inicio_mes_pasado} a {fin_mes_pasado}",
+            total_mensual,
+            total_semanal,
             total_mensual_pasado,
+            inicio_semana,
+            inicio_mes_pasado,
+            fin_mes_pasado,
             mostrar_equivalencias=False,
-            unidad="end aportada"
+            unidad="end",
         )
 
-        await eliminar_mensaje_fijo_si_existe(channel, "ranking_end_aportada_diario")
-
-        mensajes = await recrear_mensajes_fijos_ordenados(channel, [
+        for tipo_old in (
+            "ranking_end_aportada_diario",
             "ranking_end_aportada_mes_pasado",
             "ranking_end_aportada_mensual",
             "ranking_end_aportada_semanal",
-        ])
+        ):
+            await eliminar_mensaje_fijo_si_existe(channel, tipo_old)
 
-        await mensajes["ranking_end_aportada_mes_pasado"].edit(content=None, embed=embed_mes_pasado)
-        await mensajes["ranking_end_aportada_mensual"].edit(content=None, embed=embed_mensual)
-        await mensajes["ranking_end_aportada_semanal"].edit(content=None, embed=embed_semanal)
-
+        msg = await obtener_mensaje_fijo(channel, "ranking_end_unificado")
+        await msg.edit(content=None, embed=embed)
         await limpiar_mensajes_duplicados_por_titulo(
             channel,
-            [
-                embed_mes_pasado.title,
-                embed_mensual.title,
-                embed_semanal.title,
-            ],
-            keep_message_ids=[
-                mensajes["ranking_end_aportada_mes_pasado"].id,
-                mensajes["ranking_end_aportada_mensual"].id,
-                mensajes["ranking_end_aportada_semanal"].id,
-            ]
+            [embed.title],
+            keep_message_ids=[msg.id],
         )
-        print("✅ Rankings END APORTADA actualizados")
+        print("✅ Ranking END APORTADA unificado actualizado")
     except Exception as e:
         print(f"❌ Error en actualizar_rankings_end: {e}")
 

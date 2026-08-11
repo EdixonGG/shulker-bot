@@ -5739,6 +5739,172 @@ async def miminimo(ctx):
     await ctx.reply(embed=embed, mention_author=False)
 
 
+@bot.command(name="cumplimientos")
+@commands.has_permissions(administrator=True)
+async def cumplimientos_cmd(ctx, semana: str | None = None):
+    """
+    Resumen staff: quién cumplió / no el mínimo semanal, progreso y strikes.
+    Uso:
+      !cumplimientos           → semana actual
+      !cumplimientos pasada    → semana anterior
+      !cumplimientos 2026-W33  → semana ISO concreta
+    """
+    arg = (semana or "").strip().lower()
+    if not arg or arg in ("actual", "esta", "hoy"):
+        wid = current_week_id()
+    elif arg in ("pasada", "anterior", "prev"):
+        wid = previous_week_id()
+    elif arg.startswith("20") and "-W" in arg.upper():
+        wid = arg.upper() if arg[4:6] == "-W" else arg
+        # normalizar 2026-w33 → 2026-W33
+        try:
+            y, w = wid.replace("w", "W").split("-W")
+            wid = f"{int(y)}-W{int(w):02d}"
+        except Exception:
+            await ctx.reply("❌ Semana inválida. Usa `2026-W33` o `pasada`.", mention_author=False)
+            return
+    else:
+        await ctx.reply(
+            "❌ Uso: `!cumplimientos` | `!cumplimientos pasada` | `!cumplimientos 2026-W33`",
+            mention_author=False,
+        )
+        return
+
+    try:
+        ini, fin = week_date_bounds(wid)
+    except Exception:
+        await ctx.reply("❌ No pude interpretar esa semana.", mention_author=False)
+        return
+
+    def _bloque(funcion: str) -> tuple[str, int, int, int]:
+        """Texto del field + contadores ok / fail / total."""
+        rows = list_users_by_function(funcion)
+        if not rows:
+            return "_Nadie con este rol_", 0, 0, 0
+
+        lineas_ok = []
+        lineas_fail = []
+        for r in rows:
+            uid = int(r["user_id"])
+            uname = r["username"] or str(uid)
+            actual, minimo = progreso_semana_funcion(uid, funcion, wid)
+            pv_a, sh_a = shulkers_a_pv_y_shulkers(actual)
+            strikes = get_strikes(uid, funcion)
+            rest = " 🚫" if is_member_restricted(uid) else ""
+            pct = int(round((actual / minimo) * 100)) if minimo > 0 else 0
+            bar = barra_progreso(actual, minimo, largo=8)
+            linea = (
+                f"<@{uid}> **{cortar_nombre(uname, 14)}**{rest}\n"
+                f"　`{actual}`/`{minimo}` sh (`{pv_a}`PV+`{sh_a}`) {bar} **{pct}%**\n"
+                f"　Strikes: **{strikes}/{MAX_STRIKES_FUNCION}**"
+            )
+            if actual >= minimo:
+                lineas_ok.append(f"✅ {linea}")
+            else:
+                lineas_fail.append(f"❌ {linea}")
+
+        partes = []
+        if lineas_ok:
+            partes.append("**Cumplieron**\n" + "\n".join(lineas_ok))
+        if lineas_fail:
+            partes.append("**No cumplen aún**\n" + "\n".join(lineas_fail))
+        texto = "\n\n".join(partes) if partes else "_Sin datos_"
+        # Discord field limit 1024
+        if len(texto) > 1000:
+            texto = texto[:990] + "\n_…lista recortada_"
+        return texto, len(lineas_ok), len(lineas_fail), len(rows)
+
+    embed = discord.Embed(
+        title="📊 Cumplimientos semanales — Staff",
+        description=(
+            f"**Semana** `{wid}`\n"
+            f"**Periodo:** `{ini}` → `{fin}`\n"
+            f"Mínimo: **1 PV** = `27` shulkers\n"
+            f"⛏️ Minero → End **aportada** · 🧱 Obrero → End **colocada**"
+        ),
+        color=discord.Color.gold(),
+        timestamp=utc_now(),
+    )
+
+    for funcion, emoji, label in (
+        ("minero", "⛏️", "Minero"),
+        ("obrero", "🧱", "Obrero"),
+    ):
+        texto, n_ok, n_fail, n_tot = _bloque(funcion)
+        embed.add_field(
+            name=f"{emoji} {label}  ·  ✅{n_ok}  ❌{n_fail}  / {n_tot}",
+            value=texto,
+            inline=False,
+        )
+
+    # Constructores (sin mínimo numérico)
+    cons = list_users_by_function("constructor")
+    if cons:
+        c_lines = [
+            f"🏗️ <@{int(r['user_id'])}> {cortar_nombre(r['username'] or '', 16)}"
+            for r in cons[:25]
+        ]
+        if len(cons) > 25:
+            c_lines.append(f"_… y {len(cons) - 25} más_")
+        embed.add_field(
+            name=f"🏗️ Constructor ({len(cons)}) — sin mínimo automático",
+            value="\n".join(c_lines)[:1024],
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🏗️ Constructor",
+            value="_Nadie con este rol_",
+            inline=False,
+        )
+
+    # Resumen strikes / restringidos
+    cursor.execute("""
+        SELECT user_id, funcion, strikes, last_fail_week
+        FROM function_strikes
+        WHERE strikes > 0
+        ORDER BY strikes DESC, user_id
+    """)
+    strike_rows = cursor.fetchall()
+    if strike_rows:
+        s_lines = []
+        for r in strike_rows[:20]:
+            fk = r["funcion"]
+            lab = FUNCIONES_TEAM.get(fk, (0, "•", fk, ""))[1:3]
+            emoji_f, label_f = lab[0], lab[1]
+            s_lines.append(
+                f"{emoji_f} <@{int(r['user_id'])}> **{r['strikes']}/{MAX_STRIKES_FUNCION}** "
+                f"({label_f}) fail `{r['last_fail_week'] or '—'}`"
+            )
+        embed.add_field(
+            name=f"⚠️ Con strikes ({len(strike_rows)})",
+            value="\n".join(s_lines)[:1024],
+            inline=False,
+        )
+    else:
+        embed.add_field(name="⚠️ Con strikes", value="_Ninguno_", inline=False)
+
+    cursor.execute("""
+        SELECT user_id, username, restricted_at, reason
+        FROM member_status WHERE status = 'restricted'
+        ORDER BY restricted_at DESC
+    """)
+    rest_rows = cursor.fetchall()
+    if rest_rows:
+        r_lines = [
+            f"🚫 <@{int(r['user_id'])}> — `{r['restricted_at'] or '—'}` — {r['reason'] or '—'}"
+            for r in rest_rows[:15]
+        ]
+        embed.add_field(
+            name=f"🚫 Restringidos ({len(rest_rows)})",
+            value="\n".join(r_lines)[:1024],
+            inline=False,
+        )
+
+    embed.set_footer(text=f"!cumplimientos pasada · !miminimo · {footer_hora_local()}")
+    await ctx.reply(embed=embed, mention_author=False)
+
+
 @bot.command(name="evaluarminimos")
 @commands.has_permissions(administrator=True)
 async def evaluarminimos(ctx):

@@ -49,6 +49,9 @@ ROLE_MINERO_ID = 1535184004721156166
 ROLE_OBRERO_ID = 1535184284938149888
 ROLE_CONSTRUCTOR_ID = 1535184214448799864
 
+# Canal público de reglas del team (pon el ID real de #reglas)
+RULES_CHANNEL_ID = 1462316362004434978
+
 # key -> (role_id, emoji, label, descripcion)
 FUNCIONES_TEAM = {
     "minero": (ROLE_MINERO_ID, "⛏️", "Minero", "Farmea y aporta End"),
@@ -5631,8 +5634,261 @@ async def publicarcumples(ctx):
 
 
 # ===============================
-# COMANDOS FUNCIONES DEL TEAM
+# REGLAS DEL TEAM ECR
+# Basadas en normas y políticas de MineLatino Network
+# (sin modificar las reglas oficiales del server)
+# Fuentes: minelatino.com/normas-generales · minelatino.com/politicas
+#          minelatino.com/skyblock-custom-normas · minelatino.com/politica-sobre-el-acoso
 # ===============================
+
+def construir_embeds_reglas_team() -> list[discord.Embed]:
+    """Reglas del team ECR adaptadas del espíritu de MineLatino (no las reemplazan)."""
+    embeds: list[discord.Embed] = []
+
+    # —— 0. Portada ——
+    e0 = discord.Embed(
+        title="📜 REGLAS DEL TEAM ECR",
+        description=(
+            "Estas son las **normas internas del team ECR**.\n"
+            "Se inspiran en el espíritu de las normas y políticas de "
+            "**MineLatino Network**, **sin modificar ni reemplazar** las reglas oficiales del servidor.\n\n"
+            "Al unirte al team aceptas estas reglas **y** las de MineLatino.\n\n"
+            "📖 **Normas oficiales del server (obligatorias siempre):**\n"
+            "• [Normas generales](https://minelatino.com/normas-generales/)\n"
+            "• [Políticas](https://minelatino.com/politicas/)\n"
+            "• [Normas Skyblock Custom](https://minelatino.com/skyblock-custom-normas/)\n"
+            "• [Política sobre el acoso](https://minelatino.com/politica-sobre-el-acoso/)\n"
+            "• [Tienda / términos](https://minelatino.shop/politicas/)"
+        ),
+        color=discord.Color.dark_purple(),
+        timestamp=utc_now(),
+    )
+    e0.set_footer(text="ECR Team · Basado en MineLatino · sin modificar normas del server")
+    embeds.append(e0)
+
+    # —— 1. Aceptación ——
+    e1 = discord.Embed(
+        title="1️⃣ Aceptación de normas",
+        color=discord.Color.blurple(),
+    )
+    e1.description = (
+        "**Dentro del team**\n"
+        "• Al entrar al clan / Discord del team aceptás estas reglas.\n"
+        "• Desconocerlas **no** exime de cumplirlas.\n"
+        "• El staff del team puede advertir, restringir roles o expulsar del clan según la gravedad.\n\n"
+        "**Respecto a MineLatino**\n"
+        "• Seguir siempre las [normas generales](https://minelatino.com/normas-generales/) "
+        "y [políticas](https://minelatino.com/politicas/) del server.\n"
+        "• Una sanción de MineLatino puede implicar revisión de tu lugar en el team.\n"
+        "• El team **no** modifica ni anula las reglas de MineLatino."
+    )
+    embeds.append(e1)
+
+    # —— 2. Conducta / respeto ——
+    e2 = discord.Embed(
+        title="2️⃣ Conducta, respeto y acoso",
+        color=discord.Color.red(),
+    )
+    e2.description = (
+        "Siguiendo el espíritu de las normas de chat y la "
+        "[política de acoso](https://minelatino.com/politica-sobre-el-acoso/) de MineLatino:\n\n"
+        "• **Respeto** entre miembros en Discord, voz e in-game.\n"
+        "• Prohibido el **acoso** por orientación, género, rango, nacionalidad o gustos.\n"
+        "• Prohibidos **chantajes**, presión por contenido personal, nudes o datos privados.\n"
+        "• No difundir redes, WhatsApp, Telegram, etc. de alguien **sin su consentimiento**.\n"
+        "• Insultos graves, amenazas o toxicidad reiterada → sanción en el team "
+        "(warn → restricción → expulsión).\n"
+        "• Casos graves se reportan también al staff de **MineLatino**."
+    )
+    embeds.append(e2)
+
+    # —— 3. Chat Discord ——
+    e3 = discord.Embed(
+        title="3️⃣ Chat y Discord del team",
+        color=discord.Color.orange(),
+    )
+    e3.description = (
+        "Adaptado del apartado de **normas del chat** de MineLatino:\n\n"
+        "• Sin **spam**, flood ni mayúsculas abusivas.\n"
+        "• Sin enlaces externos sospechosos; solo lo útil del team o links oficiales de MineLatino.\n"
+        "• **No** pasar IP de otros servers ni invitar a otras networks.\n"
+        "• No dar información falsa sobre normas, eventos o anuncios del team/server.\n"
+        "• Usá los canales para lo que son (general, canjes, logs, etc.).\n"
+        "• El staff puede borrar mensajes y aplicar mute/warn interno."
+    )
+    embeds.append(e3)
+
+    # —— 4. Juego limpio ——
+    e4 = discord.Embed(
+        title="4️⃣ Juego limpio (hacks, bugs, AFK)",
+        color=discord.Color.dark_red(),
+    )
+    e4.description = (
+        "En línea con las normas de MineLatino sobre hacks, bugs y AFK:\n\n"
+        "• **Prohibido** cualquier hack, cliente ilegal o ventaja desleal.\n"
+        "• **Prohibido** aprovechar bugs/exploits; si encontrás uno, **reportalo** "
+        "(ticket MineLatino y avisá al staff del team).\n"
+        "• **Prohibida** la duplicación de ítems.\n"
+        "• AFK farming con programas ilegales está prohibido (como en el server).\n"
+        "• Si MineLatino te sanciona por esto, el team puede expulsarte.\n\n"
+        "Más info clientes ilegales: "
+        "[minelatino.com](https://minelatino.com/knowledge/todo-sobre-los-clientes/)"
+    )
+    embeds.append(e4)
+
+    # —— 5. Recursos del clan / islas ——
+    e5 = discord.Embed(
+        title="5️⃣ Islas, End y recursos del team",
+        color=discord.Color.green(),
+    )
+    e5.description = (
+        "Inspirado en «la isla es tu responsabilidad» y protecciones de MineLatino:\n\n"
+        "• Los recursos del clan (End, shulkers, almacén, builds) son del **team**, no personales.\n"
+        "• **Prohibido** robar, grifear o sacar material del team sin permiso del staff.\n"
+        "• Registrá aportes y colocaciones con el bot (End aportada / End colocada).\n"
+        "• No reportes cantidades falsas: es como falsificar evidencia (muy grave).\n"
+        "• El staff del team no se hace responsable de pérdidas por descuido entre miembros, "
+        "pero sí puede sancionar robo/grifeo reiterado.\n"
+        "• Respetá almacenes, islas principal/secundaria y zonas de construcción."
+    )
+    embeds.append(e5)
+
+    # —— 6. Funciones y mínimos ——
+    e6 = discord.Embed(
+        title="6️⃣ Funciones del team y mínimos semanales",
+        color=discord.Color.gold(),
+    )
+    e6.description = (
+        "Normas **propias del team** (complementan, no tocan, las de MineLatino):\n\n"
+        f"• **Minero** ⛏️ — mínimo **1 PV** (`{MIN_SHULKERS_MINERO_SEMANA}` shulkers) de End **aportada** por semana.\n"
+        f"• **Obrero** 🧱 — mínimo **1 PV** (`{MIN_SHULKERS_OBRERO_SEMANA}` shulkers) de End **colocada** por semana.\n"
+        "• **Constructor** 🏗️ — supervisado por staff (sin mínimo automático).\n\n"
+        f"• Al elegir Minero/Obrero hay candado de **{FUNCION_LOCK_DAYS} días** (no podés quitarte el rol para evadir).\n"
+        f"• Si no cumplís: se quita el rol + strike. A la **{MAX_STRIKES_FUNCION}ª** falta → restringido / posible expulsión.\n"
+        "• Comandos: `!miminimo` (tu progreso) · staff: `!cumplimientos`"
+    )
+    embeds.append(e6)
+
+    # —— 7. Reportes y evidencia ——
+    e7 = discord.Embed(
+        title="7️⃣ Reportes y evidencia",
+        color=discord.Color.teal(),
+    )
+    e7.description = (
+        "Como en MineLatino: **sin evidencia no se actúa**.\n\n"
+        "• Para reportar a un miembro del team: capturas / clips claros al staff.\n"
+        "• **Falsificar evidencia** o hacer reportes falsos es grave (sanción fuerte / expulsión).\n"
+        "• Problemas del **server** (hacks, estafas AH, etc.) → ticket en Discord de MineLatino.\n"
+        "• Problemas **internos del clan** → staff del team ECR."
+    )
+    embeds.append(e7)
+
+    # —— 8. Privacidad y seguridad ——
+    e8 = discord.Embed(
+        title="8️⃣ Privacidad y seguridad",
+        color=discord.Color.dark_grey(),
+    )
+    e8.description = (
+        "En la línea de las políticas de privacidad y seguridad de MineLatino:\n\n"
+        "• No compartas contraseñas ni datos de cuenta (ni con “staff” falso).\n"
+        "• Ningún staff del team ni de MineLatino te pedirá la contraseña.\n"
+        "• No difundas datos personales de otros miembros.\n"
+        "• Cuidá tus ítems de paga y el material del team; cada uno es responsable de lo prestado."
+    )
+    embeds.append(e8)
+
+    # —— 9. Sanciones del team ——
+    e9 = discord.Embed(
+        title="9️⃣ Sanciones dentro del team",
+        color=discord.Color.dark_orange(),
+    )
+    e9.description = (
+        "El staff del team puede aplicar, según gravedad (criterio interno, "
+        "sin sustituir sanciones de MineLatino):\n\n"
+        "1. Advertencia / warn\n"
+        "2. Mute temporal en Discord del team\n"
+        "3. Quita de roles / funciones\n"
+        "4. Usuario **restringido** (mínimos / strikes)\n"
+        "5. Expulsión del clan\n\n"
+        "• Reincidencia o casos graves (robo, acoso, hacks, evidencia falsa) → expulsión directa.\n"
+        "• Una sanción de **MineLatino** puede motivar la misma medida en el team.\n"
+        "• El staff se reserva el criterio final en casos dudosos (siempre con evidencia)."
+    )
+    embeds.append(e9)
+
+    # —— 10. Cierre ——
+    e10 = discord.Embed(
+        title="✅ Resumen",
+        color=discord.Color.dark_purple(),
+    )
+    e10.description = (
+        "1. Cumplí las **reglas de MineLatino** siempre.\n"
+        "2. Cumplí estas **reglas del team ECR**.\n"
+        "3. Respetá, aportá y no abuses de la confianza del clan.\n"
+        "4. Ante duda: preguntá al staff del team.\n\n"
+        "🔗 Normas server: https://minelatino.com/normas-generales/\n"
+        "🔗 Políticas: https://minelatino.com/politicas/\n"
+        "🔗 Acoso: https://minelatino.com/politica-sobre-el-acoso/"
+    )
+    e10.set_footer(text=footer_hora_local())
+    embeds.append(e10)
+
+    return embeds
+
+
+async def publicar_reglas_team(channel: discord.TextChannel | None = None) -> int:
+    """Publica (o republica) todas las embeds de reglas. Devuelve cuántos mensajes envió."""
+    ch = channel
+    if ch is None:
+        if not RULES_CHANNEL_ID:
+            return 0
+        ch = bot.get_channel(RULES_CHANNEL_ID)
+    if ch is None:
+        return 0
+
+    embeds = construir_embeds_reglas_team()
+    enviados = 0
+    # Discord permite hasta 10 embeds por mensaje; mandamos de a 1 para legibilidad
+    for emb in embeds:
+        await ch.send(embed=emb)
+        enviados += 1
+        await asyncio.sleep(0.35)
+    return enviados
+
+
+@bot.command(name="publicarreglas")
+@commands.has_permissions(administrator=True)
+async def publicarreglas(ctx):
+    """
+    Publica las reglas del team ECR en el canal de reglas.
+    Uso: !publicarreglas
+    (Si RULES_CHANNEL_ID está en 0, publica en el canal donde escribís el comando.)
+    """
+    destino = None
+    if RULES_CHANNEL_ID:
+        destino = bot.get_channel(RULES_CHANNEL_ID)
+        if destino is None:
+            await ctx.reply(
+                f"⚠️ No encuentro el canal `RULES_CHANNEL_ID={RULES_CHANNEL_ID}`. "
+                "Publico aquí.",
+                mention_author=False,
+            )
+            destino = ctx.channel
+    else:
+        destino = ctx.channel
+        await ctx.reply(
+            "ℹ️ `RULES_CHANNEL_ID` está en `0`. Publicando **en este canal**. "
+            "Pon el ID de #reglas en el código y reinicia para fijarlo.",
+            mention_author=False,
+        )
+
+    n = await publicar_reglas_team(destino)
+    await ctx.reply(
+        f"✅ Reglas del team publicadas: **{n}** mensajes en {destino.mention}.",
+        mention_author=False,
+    )
+
+
 @bot.command(name="publicarfunciones")
 @commands.has_permissions(administrator=True)
 async def publicarfunciones(ctx):
